@@ -36,4 +36,15 @@ void main() {
       }, skip: skip);
     }
   }
+  test('dns.google wire through a fixed destination without local DNS',
+      () async {
+    final transport = IoDohTransport(destination: InternetAddress('8.8.8.8'));
+    addTearDown(transport.close);
+    final response = await transport
+        .startWire(Uri.https('dns.google', '/dns-query'),
+            dnssecQuery('getmonero.org', 16),
+            maxResponseBytes: 65535)
+        .result;
+    expect(response.statusCode, 200);
+  }, skip: skip);
 }

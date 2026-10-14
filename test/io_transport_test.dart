@@ -70,7 +70,7 @@ void main() {
           proxy: proxied
               ? SocksProxy(InternetAddress.loopbackIPv4, proxy.port)
               : null,
-          proxyDestination: proxied ? InternetAddress('8.8.8.8') : null);
+          destination: proxied ? InternetAddress('8.8.8.8') : null);
       final response =
           await transport.start(endpoint(), maxResponseBytes: 65536).result;
       expect(jsonDecode(utf8.decode(response.body))['Answer'][0]['data'],
