@@ -1,0 +1,13 @@
+name: doh_transport
+description: Bounded DNS over HTTPS transport contracts, wire helpers, and direct or SOCKS5 IO.
+version: 0.0.1
+repository: https://github.com/cypherstack/doh_resolver/tree/main/packages/doh_transport
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+resolution: workspace
+dependencies:
+  socks_socket: ^2.0.0
+dev_dependencies:
+  lints: ^5.0.0
+  pointycastle: ^4.0.0
+  test: ^1.25.0
