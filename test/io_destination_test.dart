@@ -55,7 +55,7 @@ void main() {
             .startWire(endpoint('other.example'), wireQuery(),
                 maxResponseBytes: 512)
             .result,
-        throwsA(isA<DnsTransportException>()));
+        throwsA(isA<DohConnectionException>()));
     expect(server.exchanges, isEmpty);
   });
 
@@ -64,7 +64,7 @@ void main() {
         transport(trust: TestPki.generate().clientContext())
             .startWire(endpoint(), wireQuery(), maxResponseBytes: 512)
             .result,
-        throwsA(isA<DnsTransportException>()));
+        throwsA(isA<DohConnectionException>()));
     expect(server.exchanges, isEmpty);
   });
 
@@ -99,7 +99,7 @@ void main() {
                   wireQuery(id: id),
                   maxResponseBytes: 512)
               .result,
-          throwsA(isA<DnsTransportException>()));
+          throwsA(isA<DohConnectionTimeoutException>()));
       expect(accepted, hasLength(id));
       await peerClosed.last.timeout(const Duration(seconds: 2));
     }
@@ -128,7 +128,7 @@ void main() {
         wireQuery(),
         maxResponseBytes: 512);
     final failed =
-        expectLater(operation.result, throwsA(isA<DnsCancelledException>()));
+        expectLater(operation.result, throwsA(isA<DohCancelledException>()));
     await accepted.future;
     operation.cancel();
     await failed;

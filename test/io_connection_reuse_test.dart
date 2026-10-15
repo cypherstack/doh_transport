@@ -102,42 +102,43 @@ void main() {
         ) in [
       (
         'an empty-body 404',
-        isA<DnsTransportException>(),
+        isA<DohHttpStatusException>()
+            .having((error) => error.statusCode, 'statusCode', 404),
         false,
         (ScriptedExchange e, Completer<void> _) async =>
             e.send(httpResponse([], status: 404))
       ),
       (
         'a JSON-typed reply',
-        isA<DnsMalformedResponseException>(),
+        isA<DohMalformedResponseException>(),
         false,
         (ScriptedExchange e, Completer<void> _) async =>
             e.send(httpResponse(wireReply(id: e.id), type: 'application/json'))
       ),
       (
         'a buffered reply with another ID',
-        isA<DnsQuestionMismatchException>(),
+        isA<DohQuestionMismatchException>(),
         false,
         (ScriptedExchange e, Completer<void> _) async =>
             e.send(httpResponse(wireReply(id: e.id ^ 1)))
       ),
       (
         'a chunked reply with another ID',
-        isA<DnsQuestionMismatchException>(),
+        isA<DohQuestionMismatchException>(),
         false,
         (ScriptedExchange e, Completer<void> _) async =>
             e.send(httpResponse(wireReply(id: e.id ^ 1), chunked: true))
       ),
       (
         'a chunked reply over the size limit',
-        isA<DnsResponseTooLargeException>(),
+        isA<DohResponseTooLargeException>(),
         false,
         (ScriptedExchange e, Completer<void> _) async =>
             e.send(httpResponse(List.filled(600, 0), chunked: true))
       ),
       (
         'a timed-out exchange answered late with an extra response',
-        isA<DnsTimeoutException>(),
+        isA<DohRequestTimeoutException>(),
         false,
         (ScriptedExchange e, Completer<void> _) async {
           await Future<void>.delayed(const Duration(milliseconds: 500));
@@ -147,7 +148,7 @@ void main() {
       ),
       (
         'a cancelled exchange answered late with an extra response',
-        isA<DnsCancelledException>(),
+        isA<DohCancelledException>(),
         true,
         (ScriptedExchange e, Completer<void> ready) async {
           ready.complete();
@@ -158,7 +159,7 @@ void main() {
       ),
       (
         'a reply cancelled mid-body and then completed with an extra response',
-        isA<DnsCancelledException>(),
+        isA<DohCancelledException>(),
         true,
         (ScriptedExchange e, Completer<void> ready) async {
           final reply = httpResponse(wireReply(id: e.id));
@@ -203,7 +204,7 @@ void main() {
       final a = start(t, 1, name: 'a.example');
       final b = start(t, 2, name: 'b.example');
       final aFailed =
-          expectLater(a.result, throwsA(isA<DnsCancelledException>()));
+          expectLater(a.result, throwsA(isA<DohCancelledException>()));
       await until(() => server.exchanges.length == 2);
       final held =
           server.exchanges.firstWhere((e) => wireFirstLabel(e.body) == 'b');
@@ -388,7 +389,7 @@ void main() {
       expect(next.body[3] & 0xf, 0);
       expect(server.connections, 2);
     } else {
-      expect(next, isA<DnsQuestionMismatchException>());
+      expect(next, isA<DohQuestionMismatchException>());
     }
   });
 
@@ -466,14 +467,14 @@ void main() {
     final queued = start(t, 3);
     final failed = [
       for (final operation in [inFlight, queued])
-        expectLater(operation.result, throwsA(isA<DnsCancelledException>()))
+        expectLater(operation.result, throwsA(isA<DohCancelledException>()))
     ];
     await until(() => server.exchanges.length == 2);
     await t.close();
     await Future.wait(failed);
     await until(() => server.closed == 1);
     await expectLater(
-        start(t, 4).result, throwsA(isA<DnsCancelledException>()));
+        start(t, 4).result, throwsA(isA<DohCancelledException>()));
     expect(server.connections, 1);
   });
 
@@ -484,7 +485,7 @@ void main() {
     addTearDown(proxy.close);
     final t = transport(proxy);
     final failed =
-        expectLater(start(t, 1).result, throwsA(isA<DnsCancelledException>()));
+        expectLater(start(t, 1).result, throwsA(isA<DohCancelledException>()));
     await proxy.connected.future;
     await t.close();
     await failed;

@@ -3,19 +3,21 @@ import 'dart:async';
 import 'dns.dart';
 
 /// A started request. Starting never throws: every failure completes [result]
-/// with a [DnsException], and an unawaited [result] never raises an uncaught
-/// error.
+/// with a [DohTransportException], and an unawaited [result] never raises an
+/// uncaught error.
 class DnsOperation<T> {
   final Future<T> result;
 
   /// Fails an unfinished operation and releases its work. Repeated calls are
   /// safe.
   final void Function() cancel;
-  const DnsOperation(this.result, this.cancel);
+  DnsOperation(this.result, this.cancel) {
+    result.ignore();
+  }
 
   /// The error is reported only to listeners of [result]; dropping it is safe.
-  DnsOperation.failed(DnsException error)
-      : this(Future<T>.error(error)..ignore(), _noop);
+  DnsOperation.failed(DohTransportException error)
+      : this(Future<T>.error(error), _noop);
 }
 
 void _noop() {}

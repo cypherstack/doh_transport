@@ -64,7 +64,10 @@ void main() {
       ),
       returnsNormally,
     );
-    await expectLater(failed.result, throwsA(isA<DnsTransportException>()));
+    await expectLater(
+        failed.result,
+        throwsA(isA<DohConnectionException>()
+            .having((error) => error.cause, 'cause', isA<StateError>())));
 
     final response = await t
         .startWire(endpoint, wireQuery(id: 2), maxResponseBytes: 65535)
@@ -82,7 +85,7 @@ void main() {
       transport(fake)
           .startWire(endpoint, wireQuery(), maxResponseBytes: 65535)
           .result,
-      throwsA(isA<DnsResponseTooLargeException>()),
+      throwsA(isA<DohResponseTooLargeException>()),
     );
   });
 
@@ -97,7 +100,7 @@ void main() {
       transport(fake)
           .startWire(endpoint, wireQuery(), maxResponseBytes: 256)
           .result,
-      throwsA(isA<DnsResponseTooLargeException>()),
+      throwsA(isA<DohResponseTooLargeException>()),
     );
   });
 
@@ -110,8 +113,8 @@ void main() {
       transport(failed)
           .startWire(endpoint, wireQuery(), maxResponseBytes: 65535)
           .result,
-      throwsA(isA<DnsTransportException>()
-          .having((error) => error.httpStatus, 'httpStatus', 500)),
+      throwsA(isA<DohHttpStatusException>()
+          .having((error) => error.statusCode, 'statusCode', 500)),
     );
 
     final aged = FakeDohHttpClient(
@@ -133,7 +136,8 @@ void main() {
       transport(fake, timeout: const Duration(milliseconds: 20))
           .startWire(endpoint, wireQuery(), maxResponseBytes: 65535)
           .result,
-      throwsA(isA<DnsTimeoutException>()),
+      throwsA(isA<DohRequestTimeoutException>().having((error) => error.timeout,
+          'timeout', const Duration(milliseconds: 20))),
     );
     expect(fake.aborts, 1);
     expect(fake.requests.single.aborted, isTrue);
@@ -153,7 +157,7 @@ void main() {
     final other =
         t.startWire(endpoint, wireQuery(id: 2), maxResponseBytes: 65535);
     final failed =
-        expectLater(hung.result, throwsA(isA<DnsCancelledException>()));
+        expectLater(hung.result, throwsA(isA<DohCancelledException>()));
     hung.cancel();
     await failed;
     expect((await other.result).body.sublist(0, 2), u16(2));
@@ -197,7 +201,7 @@ void main() {
     final hung = t.startWire(endpoint, wireQuery(id: 1), maxResponseBytes: 512);
     final queued =
         t.startWire(endpoint, wireQuery(id: 2), maxResponseBytes: 512);
-    await expectLater(hung.result, throwsA(isA<DnsTimeoutException>()));
+    await expectLater(hung.result, throwsA(isA<DohRequestTimeoutException>()));
     expect((await queued.result).body.sublist(0, 2), u16(2));
   });
 

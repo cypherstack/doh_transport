@@ -98,7 +98,7 @@ void main() {
         proxy: SocksProxy(InternetAddress.loopbackIPv4, proxy.port));
     await expectLater(
         transport.start(endpoint(), maxResponseBytes: 65536).result,
-        throwsA(isA<DnsTransportException>()));
+        throwsA(isA<DohConnectionException>()));
     await Future<void>.delayed(const Duration(milliseconds: 50));
     expect(requests, 0);
     expect(proxy.connections, 1);
@@ -107,7 +107,7 @@ void main() {
     server.listen((r) => r.response.close(), onError: (Object _) {});
     await expectLater(
         IoDohTransport().start(endpoint(), maxResponseBytes: 65536).result,
-        throwsA(isA<DnsTransportException>()));
+        throwsA(isA<DohConnectionException>()));
   });
   test('redirects never produce a second request', () async {
     var requests = 0;
@@ -122,7 +122,8 @@ void main() {
         IoDohTransport(securityContext: trust)
             .start(endpoint(), maxResponseBytes: 65536)
             .result,
-        throwsA(isA<DnsTransportException>()));
+        throwsA(isA<DohHttpStatusException>()
+            .having((error) => error.statusCode, 'statusCode', 302)));
     expect(requests, 1);
   });
   test('streaming response size limit aborts before parsing', () async {
@@ -135,7 +136,7 @@ void main() {
         IoDohTransport(securityContext: trust)
             .start(endpoint(), maxResponseBytes: 128)
             .result,
-        throwsA(isA<DnsResponseTooLargeException>()));
+        throwsA(isA<DohResponseTooLargeException>()));
   });
   for (final cancel in [false, true]) {
     test('${cancel ? 'cancel' : 'timeout'} destroys stalled response transport',
@@ -158,8 +159,8 @@ void main() {
       final failed = expectLater(
           operation.result,
           throwsA(cancel
-              ? isA<DnsCancelledException>()
-              : isA<DnsTimeoutException>()));
+              ? isA<DohCancelledException>()
+              : isA<DohRequestTimeoutException>()));
       await sent.future;
       if (cancel) operation.cancel();
       await failed;
@@ -260,7 +261,7 @@ void main() {
           IoDohTransport(securityContext: trust)
               .start(endpoint(), maxResponseBytes: 65536)
               .result,
-          throwsA(isA<DnsMalformedResponseException>()));
+          throwsA(isA<DohMalformedResponseException>()));
     });
   }
 }

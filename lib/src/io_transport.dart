@@ -114,19 +114,19 @@ class IoDohTransport implements DohTransport, DohWireTransport {
       checked = padQueries && !preserved
           ? padDnsWireQuery(query)
           : checkedDnsWireQuery(query);
-    } on DnsException catch (error) {
+    } on DohTransportException catch (error) {
       return DnsOperation.failed(error);
     }
     return _start(uri, min(maxResponseBytes, 65535), checked, preserved);
   }
 
-  /// Fails queued and running operations with [DnsCancelledException], fails
+  /// Fails queued and running operations with [DohCancelledException], fails
   /// later starts the same way, and begins closing every connection. Socket
   /// teardown finishes asynchronously after this returns.
   Future<void> close() async {
     _closed = true;
     for (final request in [..._waiting, ..._running]) {
-      request.cancel();
+      request.cancel(DohCancellationReason.transportClosed);
     }
     for (final lane in [..._idle]) {
       _retire(lane);
@@ -138,16 +138,18 @@ class IoDohTransport implements DohTransport, DohWireTransport {
     // Before any request state exists: _origin throws on an unreadable port.
     if (!isUsableDohEndpoint(uri) || maxResponseBytes < 1) {
       return DnsOperation.failed(
-          const DnsInvalidQueryException('Expected a bounded HTTPS request'));
+          const DohInvalidQueryException('Expected a bounded HTTPS request'));
     }
     if (_closed) {
-      return DnsOperation.failed(
-          const DnsCancelledException('DNS transport closed'));
+      return DnsOperation.failed(const DohCancelledException(
+          'DNS transport closed',
+          reason: DohCancellationReason.transportClosed));
     }
     if (_active >= maxConcurrentRequests &&
         _waiting.length >= maxQueuedRequests) {
-      return DnsOperation.failed(
-          const DnsTransportException('DNS transport request queue is full'));
+      return DnsOperation.failed(DohQueueFullException(
+          'DNS transport request queue is full',
+          maxQueuedRequests: maxQueuedRequests));
     }
     final request = _IoRequest(this, uri, maxResponseBytes, query, preserved);
     if (_active < maxConcurrentRequests) {
@@ -185,9 +187,10 @@ class IoDohTransport implements DohTransport, DohWireTransport {
       } catch (error, stack) {
         _active--;
         request._failBeforeRun(
-            error is DnsException
+            error is DohTransportException
                 ? error
-                : const DnsTransportException('Resolver connection failed'),
+                : DohConnectionException('Resolver connection failed',
+                    cause: error),
             stack);
         return;
       }
@@ -218,7 +221,8 @@ class IoDohTransport implements DohTransport, DohWireTransport {
         ZoneSpecification(handleUncaughtError: (_, __, ___, error, stack) {
       if (lane.owner case final owner?) {
         owner._finish(
-            const DnsTransportException('Resolver connection failed'), stack);
+            DohConnectionException('Resolver connection failed', cause: error),
+            stack);
       } else {
         _retire(lane);
       }
@@ -245,8 +249,9 @@ class IoDohTransport implements DohTransport, DohWireTransport {
                 owner._done ||
                 _origin(requested) != lane.origin ||
                 _origin(owner.uri) != lane.origin) {
-              throw const DnsCancelledException(
-                  'DNS connection cancelled or redirected');
+              throw const DohCancelledException(
+                  'DNS connection cancelled or redirected',
+                  reason: DohCancellationReason.redirectRefused);
             }
             final task = proxy != null
                 ? SocksConnection.start(
@@ -293,14 +298,17 @@ class IoDohTransport implements DohTransport, DohWireTransport {
       handshake?.then((socket) => socket.close(), onError: (Object _) {});
     }
 
-    void fail(String reason) {
+    void fail(DohTransportException error) {
       timer.cancel();
       closeConnection();
-      if (!result.isCompleted) result.completeError(SocketException(reason));
+      if (!result.isCompleted) result.completeError(error);
     }
 
     timer = Timer(
-        connectionTimeout, () => fail('DNS connection deadline exceeded'));
+        connectionTimeout,
+        () => fail(DohConnectionTimeoutException(
+            'DNS connection deadline exceeded',
+            timeout: connectionTimeout)));
     () async {
       try {
         tcp = await RawSocket.startConnect(address, port);
@@ -330,8 +338,8 @@ class IoDohTransport implements DohTransport, DohWireTransport {
         if (!result.isCompleted) result.completeError(error, stack);
       }
     }();
-    return ConnectionTask.fromSocket(
-        result.future, () => fail('DNS connection cancelled'));
+    return ConnectionTask.fromSocket(result.future,
+        () => fail(const DohCancelledException('DNS connection cancelled')));
   }
 
   void _retire(_Lane lane) {
@@ -441,8 +449,10 @@ class _IoRequest {
   }
 
   void _startDeadline() {
-    _deadline = transport._zone.createTimer(transport.requestTimeout,
-        () => _finish(const DnsTimeoutException('DNS request timed out')));
+    _deadline = transport._zone.createTimer(
+        transport.requestTimeout,
+        () => _finish(DohRequestTimeoutException('DNS request timed out',
+            timeout: transport.requestTimeout)));
   }
 
   void _finish(Object outcome, [StackTrace? stack]) {
@@ -457,8 +467,8 @@ class _IoRequest {
     }
   }
 
-  void cancel() =>
-      _finish(const DnsCancelledException('DNS request cancelled'));
+  void cancel([DohCancellationReason reason = DohCancellationReason.caller]) =>
+      _finish(DohCancelledException('DNS request cancelled', reason: reason));
 
   void _failBeforeRun(Object error, StackTrace stack) {
     if (_done) return;
@@ -487,27 +497,29 @@ class _IoRequest {
       }
       final response = await request.close();
       if (response.statusCode != 200) {
-        throw DnsTransportException('Resolver HTTP request failed',
-            httpStatus: response.statusCode);
+        throw DohHttpStatusException('Resolver HTTP request failed',
+            statusCode: response.statusCode);
       }
       final mime = response.headers.contentType?.mimeType;
       if (query == null
           ? mime != 'application/json' && mime != 'application/dns-json'
           : mime != 'application/dns-message') {
-        throw const DnsMalformedResponseException(
+        throw const DohMalformedResponseException(
             'Unexpected DNS response media type');
       }
       if (response.headers.value(HttpHeaders.contentEncodingHeader)
           case final encoding? when encoding.toLowerCase() != 'identity') {
-        throw const DnsMalformedResponseException('Encoded DNS response');
+        throw const DohMalformedResponseException('Encoded DNS response');
       }
       if (response.contentLength > limit) {
-        throw const DnsResponseTooLargeException('DNS body exceeds limit');
+        throw DohResponseTooLargeException('DNS body exceeds limit',
+            limitBytes: limit);
       }
       final bytes = BytesBuilder(copy: false);
       await for (final chunk in response) {
         if (bytes.length + chunk.length > limit) {
-          throw const DnsResponseTooLargeException('DNS body exceeds limit');
+          throw DohResponseTooLargeException('DNS body exceeds limit',
+              limitBytes: limit);
         }
         bytes.add(chunk);
         if (_done) return;
@@ -523,9 +535,15 @@ class _IoRequest {
           age: _age(response.headers[HttpHeaders.ageHeader])));
     } catch (error, stack) {
       _finish(
-          error is DnsException
+          error is DohTransportException
               ? error
-              : const DnsTransportException('Resolver connection failed'),
+              : error is TimeoutException
+                  ? DohConnectionTimeoutException(
+                      'DNS connection deadline exceeded',
+                      timeout: transport.connectionTimeout,
+                      cause: error)
+                  : DohConnectionException('Resolver connection failed',
+                      cause: error),
           stack);
     }
   }

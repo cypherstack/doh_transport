@@ -14,7 +14,7 @@ try {
       .startWire(endpoint, query, maxResponseBytes: 65535)
       .result;
   final aged = adjustDnsWireTtls(response.body, age: response.age);
-} on DnsException catch (error) {
+} on DohTransportException catch (error) {
   print(error);
 } finally {
   await transport.close();
@@ -23,7 +23,7 @@ try {
 
 `doh_transport.dart` is platform-neutral: the `DohTransport` and
 `DohWireTransport` interfaces, `DnsOperation`, `DohHttpResponse`, the record
-types, `DnsException` and its leaves, and the wire helpers.
+types, `DohTransportException` and its named leaves, and the wire helpers.
 `doh_transport_io.dart` adds `IoDohTransport` and `SocksProxy` on `dart:io`.
 
 ## Trust model
@@ -35,9 +35,13 @@ answers the query sent. Nothing here validates DNSSEC: the resolver sees every
 query name and type and may answer as it likes. Without a proxy it also sees
 your address.
 
-Every failure is a `DnsException` leaf delivered through `DnsOperation.result`;
-`start` and `startWire` never throw. `DnsException` is an open base class, so
-resolver packages add their own leaves.
+Every deliberate failure is a `DohTransportException` leaf delivered through
+`DnsOperation.result`; `start` and `startWire` never throw. HTTP status,
+connection, queue, request-timeout, connection-timeout, cancellation, size,
+wire-shape and question-mismatch failures remain distinct. Cancellation errors
+include a typed reason, timeout errors include their deadline, HTTP errors
+include the status code, and connection wrappers retain their cause without
+printing it.
 
 ## Configuration
 

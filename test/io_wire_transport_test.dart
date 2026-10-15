@@ -100,7 +100,7 @@ void main() {
     ]) {
       await expectLater(
           transport.startWire(endpoint(), query, maxResponseBytes: 512).result,
-          throwsA(isA<DnsInvalidQueryException>()));
+          throwsA(isA<DohInvalidQueryException>()));
     }
     for (final uri in [
       endpoint().replace(scheme: 'http'),
@@ -113,15 +113,15 @@ void main() {
     ]) {
       await expectLater(
           transport.startWire(uri, wireQuery(), maxResponseBytes: 512).result,
-          throwsA(isA<DnsInvalidQueryException>()));
+          throwsA(isA<DohInvalidQueryException>()));
       await expectLater(transport.start(uri, maxResponseBytes: 512).result,
-          throwsA(isA<DnsInvalidQueryException>()));
+          throwsA(isA<DohInvalidQueryException>()));
     }
     await expectLater(
         transport
             .startWire(endpoint(), wireQuery(), maxResponseBytes: 0)
             .result,
-        throwsA(isA<DnsInvalidQueryException>()));
+        throwsA(isA<DohInvalidQueryException>()));
     expect(requests, 0);
     final response = await transport
         .startWire(endpoint(), wireQuery(), maxResponseBytes: 512)
@@ -133,35 +133,36 @@ void main() {
   for (final (name, code, status, type, reply) in [
     (
       'mismatched ID',
-      isA<DnsQuestionMismatchException>(),
+      isA<DohQuestionMismatchException>(),
       200,
       'application/dns-message',
       (List<int> q) => wireReply(id: (q[0] << 8 | q[1]) ^ 1)
     ),
     (
       'another question',
-      isA<DnsQuestionMismatchException>(),
+      isA<DohQuestionMismatchException>(),
       200,
       'application/dns-message',
       (List<int> q) => wireReply(name: 'b.example', id: q[0] << 8 | q[1])
     ),
     (
       'truncated reply',
-      isA<DnsMalformedResponseException>(),
+      isA<DohMalformedResponseException>(),
       200,
       'application/dns-message',
       (List<int> q) => wireReply(id: q[0] << 8 | q[1], flags: 0x8380)
     ),
     (
       'JSON content type',
-      isA<DnsMalformedResponseException>(),
+      isA<DohMalformedResponseException>(),
       200,
       'application/json',
       (List<int> q) => wireReply(id: q[0] << 8 | q[1])
     ),
     (
       'server error',
-      isA<DnsTransportException>(),
+      isA<DohHttpStatusException>()
+          .having((error) => error.statusCode, 'statusCode', 500),
       500,
       'application/dns-message',
       (List<int> q) => wireReply(id: q[0] << 8 | q[1])
@@ -200,7 +201,7 @@ void main() {
           transport
               .startWire(endpoint(), wireQuery(), maxResponseBytes: 512)
               .result,
-          throwsA(isA<DnsTimeoutException>()));
+          throwsA(isA<DohRequestTimeoutException>()));
       expect(arrived.isCompleted, isTrue);
       if (proxied) {
         await proxy.disconnected.future.timeout(const Duration(seconds: 2));
@@ -241,9 +242,9 @@ void main() {
     ];
     await until(() => arrivals == 2);
     operations[3].cancel();
-    expect(await outcomes[3], isA<DnsCancelledException>());
+    expect(await outcomes[3], isA<DohCancelledException>());
     operations[0].cancel();
-    expect(await outcomes[0], isA<DnsCancelledException>());
+    expect(await outcomes[0], isA<DohCancelledException>());
     await until(() => arrivals == 3);
     expect(held.keys, unorderedEquals(['q1', 'q2', 'q3']));
     for (final label in ['q2', 'q3']) {
@@ -292,9 +293,9 @@ void main() {
         transport
             .startWire(endpoint(), wireQuery(id: 4), maxResponseBytes: 512)
             .result,
-        throwsA(isA<DnsTransportException>()));
+        throwsA(isA<DohQueueFullException>()));
     final cancelledResult =
-        expectLater(cancelled.result, throwsA(isA<DnsCancelledException>()));
+        expectLater(cancelled.result, throwsA(isA<DohCancelledException>()));
     cancelled.cancel();
     await cancelledResult;
     final replacement = transport.startWire(endpoint(), wireQuery(id: 5),

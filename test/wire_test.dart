@@ -19,7 +19,7 @@ void main() {
       'https://example.org'
     ]) {
       expect(() => normalizeDnsName(name),
-          throwsA(isA<DnsInvalidNameException>()));
+          throwsA(isA<DohInvalidNameException>()));
     }
   });
 
@@ -137,7 +137,7 @@ void main() {
       expect(
           () => validateDnsWireResponse(
               query, wireReply(answers: [wireRecord(pointer, type, rdata)])),
-          throwsA(isA<DnsMalformedResponseException>()),
+          throwsA(isA<DohMalformedResponseException>()),
           reason: 'type $type rdata $rdata');
     }
     for (final (type, rdata) in <(int, List<int>)>[
@@ -173,7 +173,7 @@ void main() {
     validateDnsWireResponse(query, wireReply(name: 'ALICE.example'));
     expect(
         () => validateDnsWireResponse(query, wireReply(name: 'alicf.example')),
-        throwsA(isA<DnsQuestionMismatchException>()));
+        throwsA(isA<DohQuestionMismatchException>()));
   });
 
   test('rejects replies that do not answer the query', () {
@@ -186,7 +186,7 @@ void main() {
       wireReply()..[query.length - 11 - 1] = 3,
     ]) {
       expect(() => validateDnsWireResponse(query, reply),
-          throwsA(isA<DnsQuestionMismatchException>()));
+          throwsA(isA<DohQuestionMismatchException>()));
     }
   });
 
@@ -197,10 +197,10 @@ void main() {
       wireReply()..[query.length - 5] = 1,
     ]) {
       expect(() => validateDnsWireResponse(query, reply),
-          throwsA(isA<DnsMalformedResponseException>()));
+          throwsA(isA<DohMalformedResponseException>()));
     }
     expect(() => validateDnsWireResponse(wireReply(), wireReply()),
-        throwsA(isA<DnsInvalidQueryException>()));
+        throwsA(isA<DohInvalidQueryException>()));
   });
 
   test('requires exactly one question in the query', () {
@@ -213,12 +213,12 @@ void main() {
     ];
     for (final bad in [none, two]) {
       expect(() => validateDnsWireResponse(bad, wireEcho(bad)),
-          throwsA(isA<DnsInvalidQueryException>()));
+          throwsA(isA<DohInvalidQueryException>()));
       expect(
-          () => padDnsWireQuery(bad), throwsA(isA<DnsInvalidQueryException>()));
+          () => padDnsWireQuery(bad), throwsA(isA<DohInvalidQueryException>()));
     }
     expect(() => validateDnsWireResponse(query, wireEcho(two)),
-        throwsA(isA<DnsQuestionMismatchException>()));
+        throwsA(isA<DohQuestionMismatchException>()));
   });
 
   group('hostile messages fail closed', () {
@@ -294,7 +294,7 @@ void main() {
     cases.forEach((name, reply) {
       test(name, () {
         expect(() => validateDnsWireResponse(query, reply),
-            throwsA(isA<DnsException>()));
+            throwsA(isA<DohTransportException>()));
       });
     });
   });
@@ -314,7 +314,7 @@ void main() {
       try {
         validateDnsWireResponse(
             query, cut == null ? reply : reply.sublist(0, cut));
-      } on DnsException {
+      } on DohTransportException {
         // Expected for most mutations.
       }
     }
@@ -358,7 +358,7 @@ void main() {
 
     test('rejects malformed messages and negative ages', () {
       expect(() => adjustDnsWireTtls([0, 1, 2], age: Duration.zero),
-          throwsA(isA<DnsMalformedResponseException>()));
+          throwsA(isA<DohMalformedResponseException>()));
       final empty = wireHeader(flags: 0x8180, qd: 0);
       expect(() => adjustDnsWireTtls(empty, age: const Duration(seconds: -1)),
           throwsArgumentError,
@@ -414,7 +414,7 @@ void main() {
         wireHeader(qd: 0),
       ]) {
         expect(() => padDnsWireQuery(bad),
-            throwsA(isA<DnsInvalidQueryException>()));
+            throwsA(isA<DohInvalidQueryException>()));
       }
     });
   });

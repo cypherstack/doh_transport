@@ -2,20 +2,20 @@ import 'dart:typed_data';
 
 import 'dns.dart';
 
-const _malformed = DnsMalformedResponseException('Malformed DNS wire message');
+const _malformed = DohMalformedResponseException('Malformed DNS wire message');
 const _mismatch =
-    DnsQuestionMismatchException('DNS wire response does not match query');
+    DohQuestionMismatchException('DNS wire response does not match query');
 
 /// This is framing only: it never makes the answer trustworthy.
 /// Checks that wire [response] is a complete, well-formed answer to [query]:
 /// same ID, opcode and single question, not truncated, and EDNS version 0.
-/// Throws [DnsInvalidQueryException] for an unusable [query].
+/// Throws [DohInvalidQueryException] for an unusable [query].
 void validateDnsWireResponse(List<int> query, List<int> response) {
   final sent = _checkedQuery(query);
   final reply = _WireMessage.parse(response);
   if (!reply.isResponse) throw _malformed;
   if (reply.flags & 0x0200 != 0) {
-    throw const DnsMalformedResponseException('Truncated DNS wire response');
+    throw const DohMalformedResponseException('Truncated DNS wire response');
   }
   if (reply.id != sent.id ||
       reply.opcode != sent.opcode ||
@@ -104,7 +104,7 @@ List<int> checkedDnsWireQuery(List<int> query) {
 _WireMessage _checkedQuery(List<int> query) {
   final message = _parseOrNull(query);
   if (message == null || message.isResponse || message.questions.length != 1) {
-    throw const DnsInvalidQueryException('Invalid DNS wire query');
+    throw const DohInvalidQueryException('Invalid DNS wire query');
   }
   return message;
 }
@@ -115,7 +115,7 @@ bool isSignedDnsWireQuery(List<int> query) =>
 _WireMessage? _parseOrNull(List<int> bytes) {
   try {
     return _WireMessage.parse(bytes);
-  } on DnsException {
+  } on DohTransportException {
     return null;
   }
 }
