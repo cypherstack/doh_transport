@@ -1,4 +1,4 @@
-export 'package:doh_transport/testing.dart'
+export 'fake_http_client.dart'
     show
         wireName,
         wireHeader,

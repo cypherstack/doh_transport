@@ -1,8 +1,9 @@
 import 'dart:async';
 
 import 'package:doh_transport/doh_transport_io.dart';
-import 'package:doh_transport/testing.dart';
 import 'package:test/test.dart';
+
+import 'support/fake_http_client.dart';
 
 void main() {
   final endpoint = Uri.https('resolver.example', '/dns-query');

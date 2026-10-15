@@ -63,9 +63,9 @@ Wire query IDs are rewritten per connection and restored in the reply. Signed
 
 ## Development
 
-`package:doh_transport/testing.dart` has a socket-free `FakeDohHttpClient`
-(pass its `create` as `httpClientFactory`) and DNS wire builders. It does not
-depend on `package:test`.
+The socket-free `FakeDohHttpClient` and DNS wire builders are private test
+support under `test/support/`. The runtime `httpClientFactory` option lets
+callers supply their own HTTP client for tests.
 
 ```
 dart tool/check.dart         # format, analyze, test, publish --dry-run
