@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:math';
 
 import 'package:doh_transport/doh_transport.dart';
@@ -8,159 +9,58 @@ import 'support/dns_wire.dart';
 
 const pointer = [0xc0, 12];
 
+// Counts byte reads, so the work a hostile response causes is measurable.
+class CountingBytes extends ListBase<int> {
+  final List<int> bytes;
+  int reads = 0;
+  CountingBytes(this.bytes);
+  @override
+  int get length => bytes.length;
+  @override
+  set length(int value) => throw UnsupportedError('immutable');
+  @override
+  int operator [](int index) {
+    reads++;
+    return bytes[index];
+  }
+
+  @override
+  void operator []=(int index, int value) =>
+      throw UnsupportedError('immutable');
+}
+
 void main() {
   final query = wireQuery();
 
-  test('accepts a complete reply with compressed names and DNSSEC records', () {
-    final rrsig = [
-      ...u16(16), 13, 2, 0, 0, 0, 60, //
-      0, 0, 0, 0, 0, 0, 0, 0, ...u16(1),
-      ...wireName('example'), 1, 2, 3
-    ];
+  test('accepts a reply without reading its records', () {
     validateDnsWireResponse(
         query,
         wireReply(answers: [
           wireRecord(pointer, 5, [3, ...'pay'.codeUnits, 0xc0, 18]),
           wireRecord(wireName('pay.example'), 16, txtRdata('oa1:xmr')),
-          wireRecord(wireName('pay.example'), 46, rrsig),
         ]));
     validateDnsWireResponse(query, wireReply(flags: 0x8183));
+    validateDnsWireResponse(query, [...wireReply(), 0]);
+    validateDnsWireResponse(query, wireReply()..[7] = 255);
   });
 
-  test('parses every RFC 1035 legacy name-bearing RDATA format', () {
-    for (final type in [3, 4, 7, 8, 9]) {
-      validateDnsWireResponse(
-          query, wireReply(answers: [wireRecord(pointer, type, pointer)]));
-    }
-    validateDnsWireResponse(
-        query,
-        wireReply(answers: [
-          wireRecord(pointer, 14, [...pointer, ...pointer])
-        ]));
+  test('reads only the header and question of a large hostile reply', () {
+    final response = CountingBytes(wireReply(answers: [
+      for (var i = 0; i < 5000; i++) wireRecord([0xc0, 12], 99, [])
+    ]));
+    validateDnsWireResponse(query, response);
+    expect(response.reads, lessThan(64));
   });
 
-  test('registers every pre-RFC 3597 embedded domain name', () {
-    final first = wireName('first.example');
-    final second = wireName('second.example');
-    final characterStrings = [1, 0x66, 1, 0x73, 1, 0x72];
-    final cases = <(int, List<int>, List<int>)>[
-      (17, [...first, ...second], [0, first.length]),
-      (18, [0, 1, ...first], [2]),
-      (21, [0, 1, ...first], [2]),
-      (24, [...List.filled(18, 0), ...first, 1], [18]),
-      (26, [0, 1, ...first, ...second], [2, 2 + first.length]),
-      (30, [...first, 0, 0, 0, 1], [0]),
-      (33, [...List.filled(6, 0), ...first], [6]),
-      (
-        35,
-        [...List.filled(4, 0), ...characterStrings, ...first],
-        [4 + characterStrings.length]
-      ),
-      (36, [0, 1, ...first], [2]),
-      (38, [128, ...first], [1]),
-      (39, first, [0]),
-    ];
-    for (final (type, rdata, offsets) in cases) {
-      for (final offset in offsets) {
-        validateDnsWireResponse(
-            query, _ownerPointerIntoRdata(type, rdata, offset));
-      }
-    }
-  });
-
-  test('registers uncompressed names embedded in newer RDATA types', () {
-    final first = wireName('first.example');
-    final second = wireName('second.example');
-    final cases = <(int, List<int>, List<int>)>[
-      // SVCB and HTTPS: priority, TargetName, then SvcParams.
-      (64, [0, 1, ...first], [2]),
-      (65, [0, 1, ...first, 0, 1, 0, 2, 0x68, 0x32], [2]),
-      // HIP: HIT and public key, then rendezvous servers.
-      (
-        55,
-        [2, 1, 0, 1, 0xaa, 0xbb, 0xcc, ...first, ...second],
-        [7, 7 + first.length]
-      ),
-      (58, [...first, ...second], [0, first.length]),
-      (107, [0, 1, ...first], [2]),
-      (249, [...first, ...List.filled(16, 0)], [0]),
-      (250, [...first, ...List.filled(16, 0)], [0]),
-      // AMTRELAY with a domain-name relay (type 3).
-      (260, [0, 3, ...first], [2]),
-      (23, first, [0]),
-      // IPSECKEY with a domain-name gateway (type 3), then the public key.
-      (45, [10, 3, 2, ...first, 1, 2, 3], [3]),
-      // DSYNC: RRtype, scheme and port, then the target.
-      (66, [0, 59, 1, 0x14, 0xeb, ...first], [5]),
-    ];
-    for (final (type, rdata, offsets) in cases) {
-      validateDnsWireResponse(
-          query, wireReply(answers: [wireRecord(pointer, type, rdata)]));
-      for (final offset in offsets) {
-        validateDnsWireResponse(
-            query, _ownerPointerIntoRdata(type, rdata, offset));
-      }
-    }
-  });
-
-  test('newer RDATA names must not be compressed or overrun', () {
-    for (final (type, rdata) in <(int, List<int>)>[
-      (64, [0, 1, ...pointer]),
-      (65, [0, 1, ...pointer]),
-      (55, [1, 1, 0, 0, 0xaa, ...pointer]),
-      (55, [4, 1, 0, 0, 0xaa]),
-      (58, [...pointer, 0]),
-      (58, [0]),
-      (107, [0, 1, 0, 0]),
-      (250, [...pointer]),
-      (260, [0, 3, ...pointer]),
-      (260, [0, 1, 1, 2, 3]),
-      (260, [0, 0, 1]),
-      (23, pointer),
-      (45, [10, 3, 2, ...pointer]),
-      (45, [10, 1, 2, 1, 2, 3]),
-      (66, [0, 59, 1, 0x14, 0xeb, ...pointer]),
-      (66, [0, 59, 1, 0x14, 0xeb, 0, 1]),
-    ]) {
-      expect(
-          () => validateDnsWireResponse(
-              query, wireReply(answers: [wireRecord(pointer, type, rdata)])),
-          throwsA(isA<DohMalformedResponseException>()),
-          reason: 'type $type rdata $rdata');
-    }
-    for (final (type, rdata) in <(int, List<int>)>[
-      (260, [0, 1, 1, 2, 3, 4]),
-      (260, [0, 2, ...List.filled(16, 0)]),
-      (260, [0, 0]),
-      (45, [10, 0, 2, 1, 2, 3]),
-      (45, [10, 1, 2, 1, 2, 3, 4, 9]),
-      (45, [10, 2, 0, ...List.filled(16, 0)]),
-    ]) {
-      validateDnsWireResponse(
-          query, wireReply(answers: [wireRecord(pointer, type, rdata)]));
-    }
-  });
-
-  test('accepts legacy RDATA compression required for compatibility', () {
-    for (final (type, rdata) in <(int, List<int>)>[
-      (17, [...pointer, ...pointer]),
-      (18, [0, 1, ...pointer]),
-      (21, [0, 1, ...pointer]),
-      (24, [...List.filled(18, 0), ...pointer, 1]),
-      (26, [0, 1, ...pointer, ...pointer]),
-      (30, [...pointer, 0, 0, 0, 1]),
-      (33, [...List.filled(6, 0), ...pointer]),
-      (35, [...List.filled(4, 0), 0, 0, 0, ...pointer]),
-    ]) {
-      validateDnsWireResponse(
-          query, wireReply(answers: [wireRecord(pointer, type, rdata)]));
-    }
-  });
-
-  test('question comparison ignores ASCII case only', () {
+  test('question comparison folds ASCII case in the name only', () {
     validateDnsWireResponse(query, wireReply(name: 'ALICE.example'));
     expect(
         () => validateDnsWireResponse(query, wireReply(name: 'alicf.example')),
+        throwsA(isA<DohQuestionMismatchException>()));
+    // The low octet of type 65 is 'A'; type 97 must not match it.
+    final https = wireQuery(type: 65);
+    validateDnsWireResponse(https, wireEcho(https));
+    expect(() => validateDnsWireResponse(https, wireEcho(https)..[28] = 97),
         throwsA(isA<DohQuestionMismatchException>()));
   });
 
@@ -178,12 +78,8 @@ void main() {
     }
   });
 
-  test('rejects queries, truncated replies and unsupported EDNS versions', () {
-    for (final reply in [
-      query,
-      wireReply(flags: 0x8380),
-      wireReply()..[query.length - 5] = 1,
-    ]) {
+  test('rejects queries as replies and truncated replies', () {
+    for (final reply in [query, wireReply(flags: 0x8380)]) {
       expect(() => validateDnsWireResponse(query, reply),
           throwsA(isA<DohMalformedResponseException>()));
     }
@@ -209,80 +105,32 @@ void main() {
         throwsA(isA<DohQuestionMismatchException>()));
   });
 
-  group('hostile messages fail closed', () {
+  group('malformed replies fail closed', () {
     final cases = <String, List<int>>{
       'short header': wireReply().sublist(0, 11),
       'question past end': wireReply().sublist(0, 20),
-      'trailing bytes': [...wireReply(), 0],
-      'answer count beyond data': wireReply()..[7] = 255,
-      'additional count beyond data': wireReply()..[11] = 2,
-      'rdlength beyond data': wireReply(
-          answers: [wireRecord(pointer, 16, txtRdata('x')).sublist(0, 12)]),
-      'pointer into header': wireReply(answers: [
-        wireRecord([0xc0, 4], 16, txtRdata('x'))
-      ]),
-      'pointer into question type': wireReply(answers: [
-        wireRecord([0xc0, 27], 16, txtRdata('x'))
-      ]),
-      'forward pointer': wireReply(answers: [
-        wireRecord([0xc0, 200], 16, txtRdata('x'))
-      ]),
-      'self pointer': _withOwnerAt((at) => [1, 0x61, 0xc0, at]),
-      'pointer loop through earlier labels': _loop(),
-      'extended label type': wireReply(answers: [
-        wireRecord([0x41, 0], 16, txtRdata('x'))
-      ]),
+      'question type and class cut short': wireReply().sublist(0, 29),
       'label past end': [...wireHeader(flags: 0x8180), 40, 0x61],
-      'name over 255 octets': wireReply(answers: [
-        wireRecord([
-          for (var i = 0; i < 5; i++) ...[63, ...List.filled(63, 0x61)],
-          0
-        ], 16, txtRdata('x'))
-      ]),
-      'compressed name over 255 octets': _longCompressedName(),
-      'OPT in answers': wireReply(answers: [wireOpt()]),
-      'two OPT records': wireReply(additional: [wireOpt()]),
-      'OPT with non-root owner':
-          wireReply(additional: [wireOpt(owner: wireName('example'))]),
-      'OPT option overrun': [
-        ...wireHeader(flags: 0x8180, ar: 1),
-        ...wireQuestion(wireName('alice.example')),
-        ...wireOpt(options: [0, 12, 0, 9, 0])
+      'compressed question': [
+        ...wireHeader(flags: 0x8180),
+        ...wireQuestion(pointer),
       ],
-      'CNAME target overruns rdata': wireReply(answers: [
-        wireRecord(pointer, 5, [3, 0x61, 0x62])
-      ]),
-      'CNAME junk after target': wireReply(answers: [
-        wireRecord(pointer, 5, [...pointer, 0])
-      ]),
-      'compressed RRSIG signer': wireReply(answers: [
-        wireRecord(pointer, 46, [...List.filled(18, 0), ...pointer, 1])
-      ]),
-      'SOA without counters': wireReply(answers: [
-        wireRecord(pointer, 6, [...pointer, ...pointer, 0, 0, 0])
-      ]),
-      'legacy name pointer into header': wireReply(answers: [
-        wireRecord(pointer, 7, [0xc0, 4])
-      ]),
-      'MINFO missing second name':
-          wireReply(answers: [wireRecord(pointer, 14, pointer)]),
-      'RP name pointer into header': wireReply(answers: [
-        wireRecord(pointer, 17, [0xc0, 4, ...pointer])
-      ]),
-      'NAPTR truncated character string': wireReply(answers: [
-        wireRecord(pointer, 35, [...List.filled(4, 0), 2, 0])
-      ]),
-      'compressed KX exchanger': wireReply(answers: [
-        wireRecord(pointer, 36, [0, 1, ...pointer])
-      ]),
-      'compressed A6 prefix name': wireReply(answers: [
-        wireRecord(pointer, 38, [128, ...pointer])
-      ]),
+      'extended label type': [
+        ...wireHeader(flags: 0x8180),
+        ...wireQuestion([0x41, 0]),
+      ],
+      'question name over 255 octets': [
+        ...wireHeader(flags: 0x8180),
+        ...wireQuestion([
+          for (var i = 0; i < 4; i++) ...[63, ...List.filled(63, 0x61)],
+          0
+        ]),
+      ],
     };
     cases.forEach((name, reply) {
       test(name, () {
         expect(() => validateDnsWireResponse(query, reply),
-            throwsA(isA<DohTransportException>()));
+            throwsA(isA<DohMalformedResponseException>()));
       });
     });
   });
@@ -322,6 +170,16 @@ void main() {
       expect(padDnsWireQuery(padded), padded);
     });
 
+    test('skips compressed record owners before the OPT record', () {
+      final compressed = [
+        ...wireHeader(ar: 2),
+        ...wireQuestion(wireName('alice.example')),
+        ...wireRecord(pointer, 16, txtRdata('x')),
+        ...wireOpt(),
+      ];
+      expect(padDnsWireQuery(compressed).length % 128, 0);
+    });
+
     test('leaves queries without a final OPT record unchanged', () {
       final plain = wireQuery(edns: false);
       expect(padDnsWireQuery(plain), plain);
@@ -341,45 +199,24 @@ void main() {
         wireReply(),
         [...query]..[0] = 256,
         wireHeader(qd: 0),
+        [...query]..[11] = 2,
+        [...wireHeader(), ...wireQuestion(pointer)],
+        [
+          ...wireHeader(ar: 1),
+          ...wireQuestion(wireName('alice.example')),
+          ...wireRecord([0x41, 0], 16, []),
+        ],
+        [
+          ...wireHeader(ar: 1),
+          ...wireQuestion(wireName('alice.example')),
+          ...wireOpt(options: [0, 12, 0, 9, 0]),
+        ],
       ]) {
         expect(() => padDnsWireQuery(bad),
+            throwsA(isA<DohInvalidQueryException>()));
+        expect(() => checkedDnsWireQuery(bad),
             throwsA(isA<DohInvalidQueryException>()));
       }
     });
   });
-}
-
-List<int> _withOwnerAt(List<int> Function(int at) owner) {
-  final prefix = wireReply().length - wireOpt().length;
-  return wireReply(answers: [wireRecord(owner(prefix), 16, txtRdata('x'))]);
-}
-
-List<int> _loop() {
-  final head = wireReply().length - wireOpt().length;
-  final label = head + 11 + 2;
-  return wireReply(answers: [
-    wireRecord([0], 99, [0, 1, 0x61, 0xc0, label - 1]),
-    wireRecord([0xc0, label - 1], 16, txtRdata('x')),
-  ]);
-}
-
-List<int> _ownerPointerIntoRdata(int type, List<int> rdata, int offset) {
-  final head = wireReply().length - wireOpt().length;
-  final target = head + 11 + offset;
-  return wireReply(answers: [
-    wireRecord([0], type, rdata),
-    wireRecord([0xc0 | target >> 8, target & 0xff], 16, txtRdata('x')),
-  ]);
-}
-
-List<int> _longCompressedName() {
-  final head = wireReply().length - wireOpt().length;
-  final first = [
-    for (var i = 0; i < 3; i++) ...[63, ...List.filled(63, 0x61)],
-    0
-  ];
-  return wireReply(answers: [
-    wireRecord(first, 16, txtRdata('x')),
-    wireRecord([63, ...List.filled(63, 0x62), 0xc0, head], 16, txtRdata('x')),
-  ]);
 }

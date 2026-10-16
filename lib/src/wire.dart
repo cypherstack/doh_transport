@@ -5,26 +5,33 @@ import 'exceptions.dart';
 const _malformed = DohMalformedResponseException('Malformed DNS wire message');
 const _mismatch =
     DohQuestionMismatchException('DNS wire response does not match query');
+const _invalidQuery = DohInvalidQueryException('Invalid DNS wire query');
 
-/// This is framing only: it never makes the answer trustworthy.
-/// Checks that wire [response] is a complete, well-formed answer to [query]:
-/// same ID, opcode and single question, not truncated, and EDNS version 0.
-/// Throws [DohInvalidQueryException] for an unusable [query].
+/// Checks that wire [response] answers [query]: a response with the same ID,
+/// opcode and single question, not truncated. Only the header and question
+/// are read, so the work is bounded by the question; the records are left to
+/// the caller's parser. Throws [DohInvalidQueryException] for an unusable
+/// [query].
 void validateDnsWireResponse(List<int> query, List<int> response) {
-  final sent = _checkedQuery(query);
-  final reply = _WireMessage.parse(response);
-  if (!reply.isResponse) throw _malformed;
-  if (reply.flags & 0x0200 != 0) {
+  final sent = _parseQuery(query);
+  if (response.length < 12 || response.length > 65535) throw _malformed;
+  final flags = _u16(response, 2);
+  if (flags & 0x8000 == 0) throw _malformed;
+  if (flags & 0x0200 != 0) {
     throw const DohMalformedResponseException('Truncated DNS wire response');
   }
-  if (reply.id != sent.id ||
-      reply.opcode != sent.opcode ||
-      reply.questions.length != 1 ||
-      !reply.questions[0].matches(sent.questions[0])) {
+  if (_u16(response, 0) != _u16(query, 0) ||
+      flags >> 11 & 0xf != query[2] >> 3 & 0xf ||
+      _u16(response, 4) != 1) {
     throw _mismatch;
   }
-  if (reply.optVersion case final version? when version != 0) {
-    throw _malformed;
+  final end = _questionEnd(response) ?? (throw _malformed);
+  if (end != sent.questionEnd) throw _mismatch;
+  for (var i = 12; i < end; i++) {
+    final a = query[i];
+    final b = response[i];
+    // Length octets are below 'A', so only name characters fold.
+    if (a != b && (i >= end - 4 || _lower(a) != _lower(b))) throw _mismatch;
   }
 }
 
@@ -35,14 +42,11 @@ List<int> padDnsWireQuery(List<int> query, {int blockSize = 128}) {
   if (blockSize < 1 || blockSize > 512) {
     throw ArgumentError.value(blockSize, 'blockSize');
   }
-  final message = _checkedQuery(query);
-  final rdlength = message.optRdlengthOffset;
-  if (rdlength == null || !message.optIsLast || message.optHasPadding) {
-    return List<int>.unmodifiable(query);
-  }
+  final rdlength = _parseQuery(query).optRdlength;
+  if (rdlength == null) return List<int>.unmodifiable(query);
   final padding = (blockSize - (query.length + 4) % blockSize) % blockSize;
   final length = query.length + 4 + padding;
-  final optLength = (query[rdlength] << 8 | query[rdlength + 1]) + 4 + padding;
+  final optLength = _u16(query, rdlength) + 4 + padding;
   if (length > 65535 || optLength > 65535) {
     return List<int>.unmodifiable(query);
   }
@@ -58,319 +62,82 @@ List<int> padDnsWireQuery(List<int> query, {int blockSize = 128}) {
 }
 
 List<int> checkedDnsWireQuery(List<int> query) {
-  _checkedQuery(query);
+  _parseQuery(query);
   return List<int>.unmodifiable(query);
 }
 
-/// A parsed query with exactly one question.
-_WireMessage _checkedQuery(List<int> query) {
-  final message = _parseOrNull(query);
-  if (message == null || message.isResponse || message.questions.length != 1) {
-    throw const DohInvalidQueryException('Invalid DNS wire query');
+int _u16(List<int> data, int offset) => data[offset] << 8 | data[offset + 1];
+
+int _lower(int c) => c >= 0x41 && c <= 0x5a ? c + 32 : c;
+
+/// The end of the question at offset 12, or null if it is cut short, longer
+/// than 255 octets, or compressed: as the first name in the message, a
+/// pointer has nothing to refer to.
+int? _questionEnd(List<int> message) {
+  var at = 12;
+  while (true) {
+    if (at >= message.length) return null;
+    final length = message[at];
+    if (length == 0) break;
+    if (length < 0 || length > 63) return null;
+    at += 1 + length;
+    if (at - 12 > 254) return null;
   }
-  return message;
+  at += 5;
+  return at <= message.length ? at : null;
 }
 
-_WireMessage? _parseOrNull(List<int> bytes) {
-  try {
-    return _WireMessage.parse(bytes);
-  } on DohTransportException {
-    return null;
+/// The offset after the name at [at], without following compression
+/// pointers, or null if it runs past [end].
+int? _skipName(List<int> message, int at, int end) {
+  while (at < end) {
+    final length = message[at];
+    if (length == 0) return at + 1;
+    if (length & 0xc0 == 0xc0) return at + 2 <= end ? at + 2 : null;
+    if (length > 63) return null;
+    at += 1 + length;
   }
+  return null;
 }
 
-class _Question {
-  final List<int> name;
-  final int type;
-  final int dnsClass;
-  _Question(this.name, this.type, this.dnsClass);
-
-  bool matches(_Question other) {
-    if (type != other.type ||
-        dnsClass != other.dnsClass ||
-        name.length != other.name.length) {
-      return false;
-    }
-    for (var i = 0; i < name.length; i++) {
-      if (name[i] != other.name[i]) return false;
-    }
-    return true;
+/// Checks that [query] is a query with one question whose records frame it
+/// exactly. Returns the end of the question and the RDLENGTH offset of an
+/// unpadded OPT record that ends the query, if there is one.
+({int questionEnd, int? optRdlength}) _parseQuery(List<int> query) {
+  if (query.length < 12 ||
+      query.length > 65535 ||
+      query.any((byte) => byte < 0 || byte > 255) ||
+      query[2] & 0x80 != 0 ||
+      _u16(query, 4) != 1) {
+    throw _invalidQuery;
   }
-}
-
-class _WireMessage {
-  final List<int> data;
-  final questions = <_Question>[];
-  // Decoded names and their label suffixes by offset, so a pointer costs one
-  // lookup instead of a walk the sender controls.
-  final _names = <int, List<int>>{};
-  int? optRdlengthOffset;
-  int? optVersion;
-  bool optIsLast = false;
-  bool optHasPadding = false;
-  int _offset = 12;
-
-  _WireMessage._(this.data);
-
-  int get id => _u16(0);
-  int get flags => _u16(2);
-  bool get isResponse => flags & 0x8000 != 0;
-  int get opcode => flags >> 11 & 0xf;
-
-  factory _WireMessage.parse(List<int> bytes) {
-    if (bytes.length < 12 ||
-        bytes.length > 65535 ||
-        bytes.any((byte) => byte < 0 || byte > 255)) {
-      throw _malformed;
-    }
-    final message = _WireMessage._(bytes);
-    message._parse();
-    return message;
-  }
-
-  int _u16(int offset) => data[offset] << 8 | data[offset + 1];
-
-  void _need(int count) {
-    if (_offset + count > data.length) throw _malformed;
-  }
-
-  void _parse() {
-    final counts = [_u16(4), _u16(6), _u16(8), _u16(10)];
-    for (var i = 0; i < counts[0]; i++) {
-      final name = _name();
-      _need(4);
-      questions.add(_Question(name, _u16(_offset), _u16(_offset + 2)));
-      _offset += 4;
-    }
-    for (var section = 1; section < 4; section++) {
-      for (var i = 0; i < counts[section]; i++) {
-        _record(additional: section == 3);
+  final questionEnd = _questionEnd(query) ?? (throw _invalidQuery);
+  final additional = _u16(query, 10);
+  final records = _u16(query, 6) + _u16(query, 8) + additional;
+  var at = questionEnd;
+  int? optRdlength;
+  for (var i = 0; i < records; i++) {
+    final owner = at;
+    at = _skipName(query, at, query.length) ?? (throw _invalidQuery);
+    if (at + 10 > query.length) throw _invalidQuery;
+    final start = at + 10;
+    final end = start + _u16(query, at + 8);
+    if (end > query.length) throw _invalidQuery;
+    optRdlength = null;
+    if (i == records - 1 &&
+        additional > 0 &&
+        _u16(query, at) == 41 &&
+        query[owner] == 0) {
+      optRdlength = at + 8;
+      for (var option = start; option < end;) {
+        if (option + 4 > end) throw _invalidQuery;
+        if (_u16(query, option) == 12) optRdlength = null;
+        option += 4 + _u16(query, option + 2);
+        if (option > end) throw _invalidQuery;
       }
     }
-    if (_offset != data.length) throw _malformed;
+    at = end;
   }
-
-  void _record({required bool additional}) {
-    final owner = _offset;
-    _name();
-    _need(10);
-    final type = _u16(_offset);
-    final rdlength = _u16(_offset + 8);
-    final start = _offset + 10;
-    final end = start + rdlength;
-    if (end > data.length) throw _malformed;
-    if (type == 41) {
-      if (!additional || optRdlengthOffset != null || data[owner] != 0) {
-        throw _malformed;
-      }
-      optRdlengthOffset = _offset + 8;
-      optVersion = data[_offset + 5];
-      for (var at = start; at < end;) {
-        if (at + 4 > end) throw _malformed;
-        if (_u16(at) == 12) optHasPadding = true;
-        at += 4 + _u16(at + 2);
-        if (at > end) throw _malformed;
-      }
-    }
-    _offset = start;
-    switch (type) {
-      case 2 || 3 || 4 || 5 || 7 || 8 || 9 || 12:
-        _name(limit: end);
-      case 14:
-        _name(limit: end);
-        _name(limit: end);
-      case 15 || 18 || 21:
-        _skip(2, end);
-        _name(limit: end);
-      case 17:
-        _name(limit: end);
-        _name(limit: end);
-      case 6:
-        _name(limit: end);
-        _name(limit: end);
-        _skip(20, end);
-      case 24:
-        _skip(18, end);
-        _name(limit: end);
-        if (_offset >= end) throw _malformed;
-      case 26:
-        _skip(2, end);
-        _name(limit: end);
-        _name(limit: end);
-      case 30:
-        _name(limit: end);
-        _skip(4, end);
-      case 33:
-        _skip(6, end);
-        _name(limit: end);
-      case 35:
-        _skip(4, end);
-        _characterString(end);
-        _characterString(end);
-        _characterString(end);
-        _name(limit: end);
-      case 36:
-        _skip(2, end);
-        _name(limit: end, compressed: false);
-      case 38:
-        _skip(1, end);
-        final prefixLength = data[_offset - 1];
-        if (prefixLength > 128) throw _malformed;
-        _skip((128 - prefixLength + 7) ~/ 8, end);
-        if (prefixLength != 0) {
-          _name(limit: end, compressed: false);
-        }
-      case 39:
-        _name(limit: end, compressed: false);
-      case 46:
-        _skip(18, end);
-        _name(limit: end, compressed: false);
-        if (_offset >= end) throw _malformed;
-      case 47:
-        _name(limit: end, compressed: false);
-      // Newer types forbid compressing their own names, but a later name may
-      // still point into them, so each one is walked and registered.
-      case 55:
-        _skip(4, end);
-        final hitLength = data[_offset - 4];
-        final keyLength = _u16(_offset - 2);
-        _skip(hitLength + keyLength, end);
-        while (_offset < end) {
-          _name(limit: end, compressed: false);
-        }
-      case 58:
-        _name(limit: end, compressed: false);
-        _name(limit: end, compressed: false);
-      case 64 || 65 || 107:
-        _skip(2, end);
-        _name(limit: end, compressed: false);
-      case 249 || 250:
-        _name(limit: end, compressed: false);
-      case 23:
-        _name(limit: end, compressed: false);
-      case 66:
-        _skip(5, end);
-        _name(limit: end, compressed: false);
-      case 45:
-        // Precedence, gateway type and algorithm, then the gateway.
-        _skip(3, end);
-        switch (data[_offset - 2]) {
-          case 1:
-            _skip(4, end);
-          case 2:
-            _skip(16, end);
-          case 3:
-            _name(limit: end, compressed: false);
-        }
-      case 260:
-        _skip(2, end);
-        switch (data[_offset - 1] & 0x7f) {
-          case 0:
-            break;
-          case 1:
-            _skip(4, end);
-          case 2:
-            _skip(16, end);
-          case 3:
-            _name(limit: end, compressed: false);
-          default:
-            _offset = end;
-        }
-    }
-    if (_offset > end ||
-        ({
-              2,
-              3,
-              4,
-              5,
-              6,
-              7,
-              8,
-              9,
-              12,
-              14,
-              15,
-              17,
-              18,
-              21,
-              26,
-              33,
-              35,
-              36,
-              38,
-              23,
-              39,
-              55,
-              58,
-              66,
-              107,
-              260
-            }.contains(type) &&
-            _offset != end)) {
-      throw _malformed;
-    }
-    _offset = end;
-    optIsLast = type == 41;
-  }
-
-  void _skip(int count, int limit) {
-    if (_offset + count > limit) throw _malformed;
-    _offset += count;
-  }
-
-  void _characterString(int limit) {
-    _skip(1, limit);
-    _skip(data[_offset - 1], limit);
-  }
-
-  // A pointer may only target a name decoded before this one began, so chains
-  // cannot loop and every jump costs one cached lookup.
-  List<int> _name({int? limit, bool compressed = true}) {
-    final name = <int>[];
-    final starts = <(int, int)>[];
-    var at = _offset;
-    final bound = limit ?? data.length;
-    while (true) {
-      if (at >= bound) throw _malformed;
-      starts.add((at, name.length));
-      final length = data[at];
-      if (length == 0) {
-        name.add(0);
-        at++;
-        break;
-      }
-      switch (length & 0xc0) {
-        case 0xc0:
-          if (!compressed || at + 1 >= bound) throw _malformed;
-          final target = (length & 0x3f) << 8 | data[at + 1];
-          final suffix = _names[target];
-          if (target >= _offset || suffix == null) throw _malformed;
-          name.addAll(suffix);
-          at += 2;
-        case 0:
-          if (at + 1 + length > bound) throw _malformed;
-          name.add(length);
-          for (var i = at + 1; i <= at + length; i++) {
-            final c = data[i];
-            name.add(c >= 0x41 && c <= 0x5a ? c + 32 : c);
-          }
-          if (name.length + 1 > 255) throw _malformed;
-          at += 1 + length;
-          continue;
-        default:
-          throw _malformed;
-      }
-      break;
-    }
-    if (name.length > 255) throw _malformed;
-    final decoded = Uint8List.fromList(name);
-    for (final (offset, index) in starts) {
-      // Pointer offsets are 14 bits.
-      if (offset < 0x4000) {
-        _names[offset] = Uint8List.sublistView(decoded, index);
-      }
-    }
-    _offset = at;
-    return decoded;
-  }
+  if (at != query.length) throw _invalidQuery;
+  return (questionEnd: questionEnd, optRdlength: optRdlength);
 }
