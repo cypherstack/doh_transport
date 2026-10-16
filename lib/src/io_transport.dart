@@ -33,9 +33,6 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   /// to all endpoints used with this transport; TLS still verifies the
   /// requested host name.
   final InternetAddress? destination;
-
-  @Deprecated('Use destination')
-  InternetAddress? get proxyDestination => destination;
   final SecurityContext? securityContext;
 
   /// Creates each lane's HTTP client inside that lane's zone. For tests: the
@@ -57,9 +54,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   /// Whether wire queries to the same origin share connections. Off by
   /// default with a [proxy], where a shared connection lets the resolver link
   /// lookups. Wire IDs are rewritten per connection and restored in the
-  /// response, except for signed or `preserveMessage` queries, whose IDs are
-  /// kept and never repeat on a connection. JSON requests never share
-  /// connections.
+  /// response. JSON requests never share connections.
   final bool reuseConnections;
   int _active = 0;
   bool _closed = false;
@@ -72,8 +67,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   final _random = Random.secure();
   IoDohTransport(
       {this.proxy,
-      InternetAddress? destination,
-      @Deprecated('Use destination') InternetAddress? proxyDestination,
+      this.destination,
       this.securityContext,
       this.httpClientFactory,
       this.connectionTimeout = const Duration(seconds: 5),
@@ -83,9 +77,8 @@ class IoDohTransport implements DohTransport, DohWireTransport {
       this.maxQueuedRequests = 64,
       this.padQueries = true,
       bool? reuseConnections})
-      : destination = destination ?? proxyDestination,
-        reuseConnections = reuseConnections ?? proxy == null {
-    if (this.destination?.type == InternetAddressType.unix) {
+      : reuseConnections = reuseConnections ?? proxy == null {
+    if (destination?.type == InternetAddressType.unix) {
       throw ArgumentError('A numeric IP destination is required');
     }
     if (connectionTimeout <= Duration.zero ||
@@ -105,19 +98,15 @@ class IoDohTransport implements DohTransport, DohWireTransport {
 
   @override
   DnsOperation<DohHttpResponse> startWire(Uri uri, List<int> query,
-      {required int maxResponseBytes, bool preserveMessage = false}) {
+      {required int maxResponseBytes}) {
     final List<int> checked;
-    final bool preserved;
     try {
-      // SIG(0) and TSIG sign the header, so signed queries are always kept.
-      preserved = preserveMessage || isSignedDnsWireQuery(query);
-      checked = padQueries && !preserved
-          ? padDnsWireQuery(query)
-          : checkedDnsWireQuery(query);
+      checked =
+          padQueries ? padDnsWireQuery(query) : checkedDnsWireQuery(query);
     } on DohTransportException catch (error) {
       return DnsOperation.failed(error);
     }
-    return _start(uri, min(maxResponseBytes, 65535), checked, preserved);
+    return _start(uri, min(maxResponseBytes, 65535), checked);
   }
 
   /// Fails queued and running operations with [DohCancelledException], fails
@@ -134,7 +123,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   }
 
   DnsOperation<DohHttpResponse> _start(Uri uri, int maxResponseBytes,
-      [List<int>? query, bool preserved = false]) {
+      [List<int>? query]) {
     // Before any request state exists: _origin throws on an unreadable port.
     if (!isUsableDohEndpoint(uri) || maxResponseBytes < 1) {
       return DnsOperation.failed(
@@ -151,7 +140,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
           'DNS transport request queue is full',
           maxQueuedRequests: maxQueuedRequests));
     }
-    final request = _IoRequest(this, uri, maxResponseBytes, query, preserved);
+    final request = _IoRequest(this, uri, maxResponseBytes, query);
     if (_active < maxConcurrentRequests) {
       _active++;
       _run(request);
@@ -165,14 +154,10 @@ class IoDohTransport implements DohTransport, DohWireTransport {
     request._startDeadline();
     _Lane? lane;
     final origin = _origin(request.uri);
-    if (request.query case final query?) {
-      final callerId = query[0] << 8 | query[1];
+    if (request.query != null) {
       for (var i = _idle.length - 1; i >= 0; i--) {
         final candidate = _idle[i];
-        if (candidate.origin == origin &&
-            (request.preserved
-                ? candidate.canClaim(callerId)
-                : candidate.hasFreeWireIds)) {
+        if (candidate.origin == origin && candidate.hasFreeWireIds) {
           _idle.removeAt(i);
           lane = candidate;
           break;
@@ -199,17 +184,11 @@ class IoDohTransport implements DohTransport, DohWireTransport {
     request.lane = lane;
     if (request.query case final query?) {
       // A per-connection ID keeps a stale reply from answering the next
-      // request; preserved queries keep theirs and are returned as received.
-      final callerId = query[0] << 8 | query[1];
-      if (request.preserved) {
-        lane.claimWireId(_random, callerId);
-        request.sent = query;
-      } else {
-        final id = lane.claimWireId(_random);
-        request.sent = Uint8List.fromList(query)
-          ..[0] = id >> 8
-          ..[1] = id & 0xff;
-      }
+      // request.
+      final id = lane.claimWireId(_random);
+      request.sent = Uint8List.fromList(query)
+        ..[0] = id >> 8
+        ..[1] = id & 0xff;
     }
     _running.add(request);
     lane.zone.run(request.run);
@@ -415,22 +394,17 @@ class _Lane {
   // Retiring at half the ID space keeps random selection to ~2 draws.
   bool get hasFreeWireIds => _usedWireIdCount < 32768;
 
-  bool canClaim(int id) => hasFreeWireIds && !_isUsed(id);
-
   bool _isUsed(int id) => _usedWireIds[id >> 3] & (1 << (id & 7)) != 0;
 
-  /// Claims [id], or a random unused ID when none is given.
-  int claimWireId(Random random, [int? id]) {
-    id ??= () {
-      while (true) {
-        final candidate = random.nextInt(65536);
-        if (!_isUsed(candidate)) return candidate;
-      }
-    }();
-    assert(!_isUsed(id));
-    _usedWireIds[id >> 3] |= 1 << (id & 7);
-    _usedWireIdCount++;
-    return id;
+  /// Claims a random ID not yet used on this connection.
+  int claimWireId(Random random) {
+    while (true) {
+      final id = random.nextInt(65536);
+      if (_isUsed(id)) continue;
+      _usedWireIds[id >> 3] |= 1 << (id & 7);
+      _usedWireIdCount++;
+      return id;
+    }
   }
 }
 
@@ -440,12 +414,11 @@ class _IoRequest {
   final int limit;
   final List<int>? query;
   List<int>? sent;
-  final bool preserved;
   final result = Completer<DohHttpResponse>();
   _Lane? lane;
   Timer? _deadline;
   bool _done = false;
-  _IoRequest(this.transport, this.uri, this.limit, this.query, this.preserved) {
+  _IoRequest(this.transport, this.uri, this.limit, this.query) {
     result.future.ignore();
   }
 

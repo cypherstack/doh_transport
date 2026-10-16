@@ -10,5 +10,4 @@ export 'fake_http_client.dart'
         wireReply,
         txtRdata,
         wireEcho,
-        wireFirstLabel,
-        wireSignedQuery;
+        wireFirstLabel;

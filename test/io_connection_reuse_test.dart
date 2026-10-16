@@ -241,61 +241,6 @@ void main() {
     });
   }
 
-  for (final (name, type) in [('SIG(0)', 24), ('TSIG', 250)]) {
-    test('$name-signed queries keep their exact bytes and ID', () async {
-      await serve(answer);
-      final t = transport(null);
-      Future<void> send(int id) async {
-        final query = wireSignedQuery(id: id, type: type);
-        final response = await t
-            .startWire(
-                Uri.parse('https://localhost:${server.port}/dns-query'), query,
-                maxResponseBytes: 512)
-            .result;
-        expect(server.exchanges.last.body, query,
-            reason: 'the signature covers the header and every record');
-        expect(response.body.sublist(0, 2), u16(id));
-      }
-
-      await send(0x5150);
-      await send(0x5150);
-      expect(server.connections, 2,
-          reason: 'a preserved ID is still never repeated on one connection');
-      await send(0x5151);
-      expect(server.connections, 2);
-    });
-  }
-
-  test('preserveMessage exchanges an unsigned query byte-for-byte', () async {
-    // A SIG(0)-signed response covers its header and the request as sent.
-    final served = <List<int>>[];
-    await serve((e) {
-      // The echoed OPT plus a stand-in SIG(0) record.
-      final signed = [
-        ...wireEcho(e.body)..[11] = 2,
-        ...wireRecord([0], 24, [...List.filled(18, 0), 0, 9]),
-      ];
-      served.add(signed);
-      e.send(httpResponse(signed));
-    });
-    final t = transport(null);
-    final query = wireQuery(id: 0x0bad);
-    Future<DohHttpResponse> send() => t
-        .startWire(
-            Uri.parse('https://localhost:${server.port}/dns-query'), query,
-            maxResponseBytes: 512, preserveMessage: true)
-        .result;
-
-    final response = await send();
-    expect(server.exchanges.last.body, query,
-        reason: 'no padding and no ID rewrite');
-    expect(response.body, served.last,
-        reason: 'the response is returned exactly as signed');
-    await send();
-    expect(server.connections, 2,
-        reason: 'a preserved ID is still never repeated on one connection');
-  });
-
   test('an unsolicited response on an idle lane retires only that lane',
       () async {
     await serve((e) async {

@@ -30,8 +30,7 @@ void validateDnsWireResponse(List<int> query, List<int> response) {
 
 /// Pads [query] to a multiple of [blockSize] octets with an RFC 7830
 /// padding option, as RFC 8467 recommends. Queries without a final OPT
-/// record, already padded, or signed (signatures must stay last) are
-/// returned unchanged.
+/// record or already padded are returned unchanged.
 List<int> padDnsWireQuery(List<int> query, {int blockSize = 128}) {
   if (blockSize < 1 || blockSize > 512) {
     throw ArgumentError.value(blockSize, 'blockSize');
@@ -72,9 +71,6 @@ _WireMessage _checkedQuery(List<int> query) {
   return message;
 }
 
-bool isSignedDnsWireQuery(List<int> query) =>
-    _parseOrNull(query)?.isSigned ?? false;
-
 _WireMessage? _parseOrNull(List<int> bytes) {
   try {
     return _WireMessage.parse(bytes);
@@ -112,7 +108,6 @@ class _WireMessage {
   int? optVersion;
   bool optIsLast = false;
   bool optHasPadding = false;
-  bool isSigned = false;
   int _offset = 12;
 
   _WireMessage._(this.data);
@@ -164,8 +159,6 @@ class _WireMessage {
     final start = _offset + 10;
     final end = start + rdlength;
     if (end > data.length) throw _malformed;
-    // SIG(0) and TSIG sign the header, including the ID.
-    if (additional && (type == 24 || type == 250)) isSigned = true;
     if (type == 41) {
       if (!additional || optRdlengthOffset != null || data[owner] != 0) {
         throw _malformed;

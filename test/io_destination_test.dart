@@ -135,13 +135,7 @@ void main() {
     await peerClosed.future.timeout(const Duration(seconds: 2));
   });
 
-  test('proxyDestination remains an alias of destination', () {
-    final address = InternetAddress('8.8.8.8');
-    // ignore: deprecated_member_use_from_same_package
-    final t = IoDohTransport(proxyDestination: address);
-    expect(t.destination, address);
-    // ignore: deprecated_member_use_from_same_package
-    expect(t.proxyDestination, address);
+  test('a destination must be a numeric address', () {
     expect(
         () => IoDohTransport(
             destination: InternetAddress('/s', type: InternetAddressType.unix)),

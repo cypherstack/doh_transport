@@ -45,14 +45,8 @@ abstract interface class DohTransport {
 
 /// Sends bounded RFC 8484 wire-format queries.
 abstract interface class DohWireTransport {
-  /// Sends [query]. With [preserveMessage], its bytes and the response bytes
-  /// are kept exactly as exchanged for transaction signatures such as SIG(0).
-  DnsOperation<DohHttpResponse> startWire(
-    Uri uri,
-    List<int> query, {
-    required int maxResponseBytes,
-    bool preserveMessage = false,
-  });
+  DnsOperation<DohHttpResponse> startWire(Uri uri, List<int> query,
+      {required int maxResponseBytes});
 }
 
 /// Whether [uri] is a usable HTTPS endpoint: no credentials or fragment, a
