@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'dns.dart';
+import 'exceptions.dart';
 
 /// A started request. Starting never throws: every failure completes [result]
 /// with a [DohTransportException], and an unawaited [result] never raises an
@@ -53,4 +53,20 @@ abstract interface class DohWireTransport {
     required int maxResponseBytes,
     bool preserveMessage = false,
   });
+}
+
+/// Whether [uri] is a usable HTTPS endpoint: no credentials or fragment, a
+/// host, and a port that parses and fits 1-65535.
+bool isUsableDohEndpoint(Uri uri) {
+  if (uri.scheme != 'https' ||
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasFragment) {
+    return false;
+  }
+  try {
+    return uri.port >= 1 && uri.port <= 65535;
+  } on FormatException {
+    return false;
+  }
 }

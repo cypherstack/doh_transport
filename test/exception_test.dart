@@ -7,7 +7,6 @@ void main() {
   test('every named failure has the sealed transport root', () {
     final cause = StateError('private endpoint detail');
     final failures = <DohTransportException>[
-      const DohInvalidNameException('invalid name'),
       const DohInvalidQueryException('invalid query'),
       const DohMalformedResponseException('malformed response'),
       const DohResponseTooLargeException('too large', limitBytes: 512),

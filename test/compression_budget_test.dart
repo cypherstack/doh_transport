@@ -1,6 +1,6 @@
 import 'dart:collection';
 
-import 'package:doh_transport/doh_transport.dart';
+import 'package:doh_transport/src/wire.dart';
 import 'package:test/test.dart';
 
 import 'support/dns_wire.dart';

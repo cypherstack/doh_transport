@@ -1,12 +1,5 @@
-/// Bounded DNS-over-HTTPS transport contracts, records, errors, and wire
-/// helpers.
+/// Bounded DNS-over-HTTPS transport contracts and errors.
 library;
 
-export 'src/dns.dart';
+export 'src/exceptions.dart';
 export 'src/transport.dart';
-export 'src/wire.dart'
-    show
-        adjustDnsWireTtls,
-        padDnsWireQuery,
-        validateDnsWireResponse,
-        isUsableDohEndpoint;

@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:socks_socket/socks_connection.dart';
 // ignore: implementation_imports
 import 'package:socks_socket/src/connection_socket.dart' show RawChannel;
-import 'dns.dart';
+import 'exceptions.dart';
 import 'transport.dart';
 import 'wire.dart';
 

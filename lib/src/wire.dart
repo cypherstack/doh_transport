@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'dns.dart';
+import 'exceptions.dart';
 
 const _malformed = DohMalformedResponseException('Malformed DNS wire message');
 const _mismatch =
@@ -26,27 +26,6 @@ void validateDnsWireResponse(List<int> query, List<int> response) {
   if (reply.optVersion case final version? when version != 0) {
     throw _malformed;
   }
-}
-
-/// A copy of wire [response] with every record TTL replaced by its
-/// [effectiveDnsTtl] after [age], such as `DohHttpResponse.age`. OPT is left
-/// alone: its TTL field carries EDNS flags. RRSIG validation is unaffected
-/// because it uses the signature's Original TTL, but SIG(0) and TSIG
-/// transaction signatures cover the whole message, so verify them first.
-List<int> adjustDnsWireTtls(List<int> response, {required Duration age}) {
-  if (age < Duration.zero) throw ArgumentError.value(age, 'age');
-  final message = _WireMessage.parse(response);
-  final adjusted = Uint8List.fromList(response);
-  for (final at in message.ttlOffsets) {
-    final ttl = message._u16(at) << 16 | message._u16(at + 2);
-    final value = effectiveDnsTtl(ttl, age: age);
-    adjusted
-      ..[at] = value >> 24
-      ..[at + 1] = value >> 16 & 0xff
-      ..[at + 2] = value >> 8 & 0xff
-      ..[at + 3] = value & 0xff;
-  }
-  return List<int>.unmodifiable(adjusted);
 }
 
 /// Pads [query] to a multiple of [blockSize] octets with an RFC 7830
@@ -77,22 +56,6 @@ List<int> padDnsWireQuery(List<int> query, {int blockSize = 128}) {
     ..[query.length + 2] = padding >> 8
     ..[query.length + 3] = padding & 0xff;
   return List<int>.unmodifiable(padded);
-}
-
-/// Whether [uri] is a usable HTTPS endpoint: no credentials or fragment, a
-/// host, and a port that parses and fits 1-65535.
-bool isUsableDohEndpoint(Uri uri) {
-  if (uri.scheme != 'https' ||
-      uri.host.isEmpty ||
-      uri.userInfo.isNotEmpty ||
-      uri.hasFragment) {
-    return false;
-  }
-  try {
-    return uri.port >= 1 && uri.port <= 65535;
-  } on FormatException {
-    return false;
-  }
 }
 
 List<int> checkedDnsWireQuery(List<int> query) {
@@ -150,7 +113,6 @@ class _WireMessage {
   bool optIsLast = false;
   bool optHasPadding = false;
   bool isSigned = false;
-  final ttlOffsets = <int>[];
   int _offset = 12;
 
   _WireMessage._(this.data);
@@ -202,7 +164,6 @@ class _WireMessage {
     final start = _offset + 10;
     final end = start + rdlength;
     if (end > data.length) throw _malformed;
-    if (type != 41) ttlOffsets.add(_offset + 4);
     // SIG(0) and TSIG sign the header, including the ID.
     if (additional && (type == 24 || type == 250)) isSigned = true;
     if (type == 41) {
