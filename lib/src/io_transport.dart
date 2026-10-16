@@ -190,7 +190,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
             error is DohTransportException
                 ? error
                 : DohConnectionException('Resolver connection failed',
-                    cause: error),
+                    cause: error, causeStackTrace: stack),
             stack);
         return;
       }
@@ -221,7 +221,8 @@ class IoDohTransport implements DohTransport, DohWireTransport {
         ZoneSpecification(handleUncaughtError: (_, __, ___, error, stack) {
       if (lane.owner case final owner?) {
         owner._finish(
-            DohConnectionException('Resolver connection failed', cause: error),
+            DohConnectionException('Resolver connection failed',
+                cause: error, causeStackTrace: stack),
             stack);
       } else {
         _retire(lane);
@@ -541,9 +542,10 @@ class _IoRequest {
                   ? DohConnectionTimeoutException(
                       'DNS connection deadline exceeded',
                       timeout: transport.connectionTimeout,
-                      cause: error)
+                      cause: error,
+                      causeStackTrace: stack)
                   : DohConnectionException('Resolver connection failed',
-                      cause: error),
+                      cause: error, causeStackTrace: stack),
           stack);
     }
   }

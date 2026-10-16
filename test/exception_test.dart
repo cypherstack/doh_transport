@@ -4,29 +4,66 @@ import 'package:doh_transport/doh_transport.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('every named failure has the sealed transport root', () {
-    final cause = StateError('private endpoint detail');
-    final failures = <DohTransportException>[
-      const DohInvalidQueryException('invalid query'),
-      const DohMalformedResponseException('malformed response'),
-      const DohResponseTooLargeException('too large', limitBytes: 512),
-      const DohQuestionMismatchException('wrong question'),
-      const DohHttpStatusException('HTTP failure', statusCode: 503),
-      DohConnectionException('connection failure', cause: cause),
-      const DohQueueFullException('queue full', maxQueuedRequests: 4),
-      const DohRequestTimeoutException('request timeout',
-          timeout: Duration(seconds: 30)),
-      DohConnectionTimeoutException('connection timeout',
-          timeout: const Duration(seconds: 5), cause: cause),
-      const DohCancelledException('cancelled'),
-    ];
+  final cause = StateError('resolver.example');
+  final stack = StackTrace.current;
+  final failures = <DohTransportException, String>{
+    DohInvalidQueryException('invalid query',
+        cause: cause,
+        causeStackTrace: stack): 'DohInvalidQueryException: invalid query',
+    DohMalformedResponseException('malformed response',
+            cause: cause, causeStackTrace: stack):
+        'DohMalformedResponseException: malformed response',
+    DohResponseTooLargeException('too large',
+            limitBytes: 512, cause: cause, causeStackTrace: stack):
+        'DohResponseTooLargeException(limitBytes: 512): too large',
+    DohQuestionMismatchException('wrong question',
+        cause: cause,
+        causeStackTrace: stack): 'DohQuestionMismatchException: wrong question',
+    DohHttpStatusException('HTTP failure',
+            statusCode: 503, cause: cause, causeStackTrace: stack):
+        'DohHttpStatusException(statusCode: 503): HTTP failure',
+    DohConnectionException('connection failure',
+        cause: cause,
+        causeStackTrace: stack): 'DohConnectionException: connection failure',
+    DohQueueFullException('queue full',
+            maxQueuedRequests: 4, cause: cause, causeStackTrace: stack):
+        'DohQueueFullException(maxQueuedRequests: 4): queue full',
+    DohRequestTimeoutException('request timeout',
+            timeout: const Duration(seconds: 30),
+            cause: cause,
+            causeStackTrace: stack):
+        'DohRequestTimeoutException(timeout: 0:00:30.000000): request timeout',
+    DohConnectionTimeoutException('connection timeout',
+            timeout: const Duration(seconds: 5),
+            cause: cause,
+            causeStackTrace: stack):
+        'DohConnectionTimeoutException(timeout: 0:00:05.000000): '
+            'connection timeout',
+    DohCancelledException('cancelled',
+            reason: DohCancellationReason.transportClosed,
+            cause: cause,
+            causeStackTrace: stack):
+        'DohCancelledException(reason: transportClosed): cancelled',
+  };
 
-    expect(failures, everyElement(isA<DohTransportException>()));
-    expect(failures.map((failure) => failure.runtimeType).toSet(),
+  test('every leaf has the sealed root and its own runtime type', () {
+    expect(failures.keys.map((failure) => failure.runtimeType).toSet(),
         hasLength(failures.length));
   });
 
-  test('structured fields preserve status, limits, deadlines and reason', () {
+  test('the root keeps the cause and its stack without printing it', () {
+    failures.forEach((failure, rendered) {
+      expect(failure.cause, same(cause));
+      expect(failure.causeStackTrace, same(stack));
+      expect(failure.toString(), rendered);
+      expect(failure.toString(), isNot(contains('resolver.example')));
+    });
+    const bare = DohConnectionException('no cause');
+    expect(bare.cause, isNull);
+    expect(bare.causeStackTrace, isNull);
+  });
+
+  test('structured fields keep status, limits, deadlines and reason', () {
     expect(const DohHttpStatusException('failed', statusCode: 429).statusCode,
         429);
     expect(
@@ -42,34 +79,12 @@ void main() {
             .timeout,
         const Duration(seconds: 12));
     expect(
-        const DohCancelledException('closed',
-                reason: DohCancellationReason.transportClosed)
-            .reason,
-        DohCancellationReason.transportClosed);
-  });
-
-  test('toString identifies leaves and renders only safe structured fields',
-      () {
-    final cause = StateError('resolver.example');
-    expect(
-        const DohHttpStatusException('request failed', statusCode: 503)
-            .toString(),
-        'DohHttpStatusException(statusCode: 503): request failed');
-    expect(
-        const DohRequestTimeoutException('timed out',
-                timeout: Duration(seconds: 30))
-            .toString(),
-        'DohRequestTimeoutException(timeout: 0:00:30.000000): timed out');
-    expect(
-        const DohCancelledException('closed',
-                reason: DohCancellationReason.transportClosed)
-            .toString(),
-        'DohCancelledException(reason: transportClosed): closed');
-    final connection =
-        DohConnectionException('connection failed', cause: cause);
-    expect(connection.cause, same(cause));
-    expect(connection.toString(), 'DohConnectionException: connection failed');
-    expect(connection.toString(), isNot(contains('resolver.example')));
+        const DohConnectionTimeoutException('late',
+                timeout: Duration(seconds: 3))
+            .timeout,
+        const Duration(seconds: 3));
+    expect(const DohCancelledException('stopped').reason,
+        DohCancellationReason.caller);
   });
 
   test('dropping any operation result cannot emit an uncaught zone error',
@@ -77,6 +92,7 @@ void main() {
     final errors = <Object>[];
     await runZonedGuarded(() async {
       DnsOperation<void>(Future<void>.error(StateError('dropped')), () {});
+      DnsOperation<void>.failed(const DohConnectionException('dropped'));
       await Future<void>.delayed(Duration.zero);
     }, (error, _) => errors.add(error));
 
