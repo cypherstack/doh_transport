@@ -4,9 +4,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:socks_socket/socks_connection.dart';
-// ignore: implementation_imports
-import 'package:socks_socket/src/connection_socket.dart' show RawChannel;
 import 'exceptions.dart';
+import 'tls_connection.dart';
 import 'transport.dart';
 import 'wire.dart';
 
@@ -249,7 +248,10 @@ class IoDohTransport implements DohTransport, DohWireTransport {
                     securityContext: securityContext,
                     credentials: proxy.credentials,
                     timeout: connectionTimeout)
-                : _connect(destination!, owner.uri.port, owner.uri.host);
+                : connectTls(destination!, owner.uri.port,
+                    tlsHost: owner.uri.host,
+                    context: securityContext,
+                    timeout: connectionTimeout);
             lane.tasks.add(task);
             task.socket.then((_) => lane.tasks.remove(task),
                 onError: (Object _) => lane.tasks.remove(task));
@@ -265,67 +267,6 @@ class IoDohTransport implements DohTransport, DohWireTransport {
       return client;
     });
     return lane;
-  }
-
-  /// Connects to [address] and authenticates the peer as [tlsHost]. The raw
-  /// socket remains available so cancellation can close a pending handshake.
-  ConnectionTask<Socket> _connect(
-      InternetAddress address, int port, String tlsHost) {
-    final result = Completer<Socket>();
-    ConnectionTask<RawSocket>? tcp;
-    RawSocket? raw;
-    Future<RawSecureSocket>? handshake;
-    RawChannel? channel;
-    late final Timer timer;
-    void closeConnection() {
-      tcp?.cancel();
-      channel?.destroy();
-      raw?.close();
-      handshake?.then((socket) => socket.close(), onError: (Object _) {});
-    }
-
-    void fail(DohTransportException error) {
-      timer.cancel();
-      closeConnection();
-      if (!result.isCompleted) result.completeError(error);
-    }
-
-    timer = Timer(
-        connectionTimeout,
-        () => fail(DohConnectionTimeoutException(
-            'DNS connection deadline exceeded',
-            timeout: connectionTimeout)));
-    () async {
-      try {
-        tcp = await RawSocket.startConnect(address, port);
-        if (result.isCompleted) {
-          tcp!.cancel();
-          return;
-        }
-        final plain = raw = await tcp!.socket;
-        if (result.isCompleted) {
-          plain.close();
-          return;
-        }
-        handshake = RawSecureSocket.secure(plain,
-            host: tlsHost, context: securityContext);
-        final secured = await handshake!;
-        raw = secured;
-        timer.cancel();
-        if (result.isCompleted) {
-          secured.close();
-          return;
-        }
-        channel = RawChannel(secured);
-        result.complete(channel!.socket());
-      } catch (error, stack) {
-        timer.cancel();
-        closeConnection();
-        if (!result.isCompleted) result.completeError(error, stack);
-      }
-    }();
-    return ConnectionTask.fromSocket(result.future,
-        () => fail(const DohCancelledException('DNS connection cancelled')));
   }
 
   void _retire(_Lane lane) {
