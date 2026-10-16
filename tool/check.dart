@@ -5,7 +5,7 @@ import 'dart:io';
 const _steps = [
   ['pub', 'get', '--no-example'],
   ['format', '--output=none', '--set-exit-if-changed', 'lib', 'test', 'tool'],
-  ['analyze', 'lib', 'test', 'tool'],
+  ['analyze', '--fatal-infos'],
   ['test', '--reporter', 'expanded'],
   ['pub', 'publish', '--dry-run'],
 ];
