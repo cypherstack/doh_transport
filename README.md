@@ -1,7 +1,7 @@
 # doh_transport
 
-DNS-over-HTTPS transport for Dart: bounded JSON and RFC 8484 wire exchanges,
-direct or through SOCKS5, plus DNS wire helpers and a typed failure hierarchy.
+Bounded DNS-over-HTTPS transport for Dart: RFC 8484 wire-format POST and
+plain GET exchanges, direct or through SOCKS5, with a typed failure hierarchy.
 
 ## Usage
 
@@ -13,7 +13,7 @@ try {
   final response = await transport
       .startWire(endpoint, query, maxResponseBytes: 65535)
       .result;
-  final aged = adjustDnsWireTtls(response.body, age: response.age);
+  // response.body is the DNS reply; response.age is its HTTP cache age.
 } on DohTransportException catch (error) {
   print(error);
 } finally {
@@ -21,27 +21,27 @@ try {
 }
 ```
 
-`doh_transport.dart` is platform-neutral: the `DohTransport` and
-`DohWireTransport` interfaces, `DnsOperation`, `DohHttpResponse`, the record
-types, `DohTransportException` and its named leaves, and the wire helpers.
-`doh_transport_io.dart` adds `IoDohTransport` and `SocksProxy` on `dart:io`.
+`doh_transport.dart` is platform-neutral: the `DohWireTransport` (POST) and
+`DohTransport` (GET) interfaces, `DnsOperation`, `DohHttpResponse`,
+`isUsableDohEndpoint`, and `DohTransportException` with its leaves.
+`doh_transport_io.dart` adds `IoDohTransport`, `SocksProxy` and
+`SocksCredentials` on `dart:io`.
 
 ## Trust model
 
 `IoDohTransport` verifies the endpoint certificate, refuses redirects, bounds
 response size and time, and never falls back from a configured proxy to a
-direct connection. `validateDnsWireResponse` checks framing and that the reply
-answers the query sent. Nothing here validates DNSSEC: the resolver sees every
-query name and type and may answer as it likes. Without a proxy it also sees
-your address.
+direct connection. It accepts only HTTP 200 with the expected media type
+(`application/dns-message` for wire queries, the caller's `mediaType` for GET)
+and no content encoding. A wire reply must be an untruncated response with the
+query's ID, opcode and question; its records are left to the caller's parser.
+Nothing here validates DNSSEC: the resolver sees every query and may answer as
+it likes. Without a proxy it also sees your address.
 
-Every deliberate failure is a `DohTransportException` leaf delivered through
-`DnsOperation.result`; `start` and `startWire` never throw. HTTP status,
-connection, queue, request-timeout, connection-timeout, cancellation, size,
-wire-shape and question-mismatch failures remain distinct. Cancellation errors
-include a typed reason, timeout errors include their deadline, HTTP errors
-include the status code, and connection wrappers retain their cause without
-printing it.
+Every failure is a `DohTransportException` leaf delivered through
+`DnsOperation.result`; `start` and `startWire` never throw. Leaves carry their
+status code, size limit, deadline, queue bound or cancellation reason, and keep
+any lower-layer `cause` without printing it.
 
 ## Configuration
 
@@ -54,27 +54,23 @@ printing it.
   the URI host, so the address must serve its certificate.
 - `reuseConnections`: share one connection per origin for wire queries. On by
   default without a proxy, off with one, where a shared connection lets the
-  resolver link lookups. Pass `true` when the transport already represents one
-  isolated lookup. JSON requests never share connections.
-- `connectionTimeout` 5 s; `requestTimeout` 30 s per operation once it leaves
+  resolver link lookups. GET requests never share connections.
+- `connectionTimeout` 5 s, covering TCP, SOCKS negotiation and the TLS
+  handshake on every path; `requestTimeout` 30 s per operation once it leaves
   the queue; `idleTimeout` 5 s; `maxConcurrentRequests` 8;
-  `maxQueuedRequests` 64; `padQueries` true (RFC 8467 padding).
+  `maxQueuedRequests` 64; `padQueries` true (RFC 8467 padding of queries that
+  end in an OPT record).
 - `securityContext` for custom trust roots. `httpClientFactory` is for tests
   and bypasses the TLS and connection guarantees.
 
-Wire query IDs are rewritten per connection and restored in the reply. Signed
-(SIG(0), TSIG) and `preserveMessage` exchanges keep their exact bytes.
+Wire query IDs are rewritten per connection and restored in the reply.
 
 ## Development
 
-The socket-free `FakeDohHttpClient` and DNS wire builders are private test
-support under `test/support/`. The runtime `httpClientFactory` option lets
-callers supply their own HTTP client for tests.
-
 ```
-dart tool/check.dart         # format, analyze, test, publish --dry-run
-dart test -x integration     # skip the loopback socket tests
-DOH_LIVE_TESTS=1 dart test   # also query public resolvers
+dart tool/check.dart                            # format, analyze, test, publish --dry-run
+dart test -x integration                        # skip the loopback socket tests
+DOH_LIVE_TESTS=1 dart test test/live_test.dart  # query public resolvers
 ```
 
 ## License
