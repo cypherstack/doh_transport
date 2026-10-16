@@ -35,12 +35,15 @@ class DohHttpResponse {
   }
 }
 
-/// Sends bounded DoH JSON GET requests.
+/// Sends bounded HTTPS GET requests to a DoH resolver.
 ///
 /// Implementations deliver failures through [DnsOperation.result] and make
 /// cancellation idempotent.
 abstract interface class DohTransport {
-  DnsOperation<DohHttpResponse> start(Uri uri, {required int maxResponseBytes});
+  /// Requests [uri], sending [mediaType] as `Accept` and requiring it as the
+  /// response `Content-Type`. The body is returned as received.
+  DnsOperation<DohHttpResponse> start(Uri uri,
+      {required String mediaType, required int maxResponseBytes});
 }
 
 /// Sends bounded RFC 8484 wire-format queries.

@@ -114,8 +114,28 @@ void main() {
       await expectLater(
           transport.startWire(uri, wireQuery(), maxResponseBytes: 512).result,
           throwsA(isA<DohInvalidQueryException>()));
-      await expectLater(transport.start(uri, maxResponseBytes: 512).result,
+      await expectLater(
+          transport
+              .start(uri,
+                  mediaType: 'application/dns-message', maxResponseBytes: 512)
+              .result,
           throwsA(isA<DohInvalidQueryException>()));
+    }
+    for (final type in [
+      '',
+      'application',
+      'application/',
+      '/dns-message',
+      'application/dns-message; charset=utf-8',
+      'application/dns message',
+      'application/dns-message\r\nx-injected: 1',
+    ]) {
+      await expectLater(
+          transport
+              .start(endpoint(), mediaType: type, maxResponseBytes: 512)
+              .result,
+          throwsA(isA<DohInvalidQueryException>()),
+          reason: type);
     }
     await expectLater(
         transport

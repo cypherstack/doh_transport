@@ -54,7 +54,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   /// Whether wire queries to the same origin share connections. Off by
   /// default with a [proxy], where a shared connection lets the resolver link
   /// lookups. Wire IDs are rewritten per connection and restored in the
-  /// response. JSON requests never share connections.
+  /// response. GET requests never share connections.
   final bool reuseConnections;
   int _active = 0;
   bool _closed = false;
@@ -92,8 +92,13 @@ class IoDohTransport implements DohTransport, DohWireTransport {
 
   @override
   DnsOperation<DohHttpResponse> start(Uri uri,
-      {required int maxResponseBytes}) {
-    return _start(uri, maxResponseBytes);
+      {required String mediaType, required int maxResponseBytes}) {
+    final type = mediaType.toLowerCase();
+    if (!_mediaType.hasMatch(type)) {
+      return DnsOperation.failed(
+          const DohInvalidQueryException('Expected a type/subtype media type'));
+    }
+    return _start(uri, type, maxResponseBytes);
   }
 
   @override
@@ -106,7 +111,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
     } on DohTransportException catch (error) {
       return DnsOperation.failed(error);
     }
-    return _start(uri, min(maxResponseBytes, 65535), checked);
+    return _start(uri, _dnsMessage, min(maxResponseBytes, 65535), checked);
   }
 
   /// Fails queued and running operations with [DohCancelledException], fails
@@ -122,7 +127,8 @@ class IoDohTransport implements DohTransport, DohWireTransport {
     }
   }
 
-  DnsOperation<DohHttpResponse> _start(Uri uri, int maxResponseBytes,
+  DnsOperation<DohHttpResponse> _start(
+      Uri uri, String mediaType, int maxResponseBytes,
       [List<int>? query]) {
     // Before any request state exists: _origin throws on an unreadable port.
     if (!isUsableDohEndpoint(uri) || maxResponseBytes < 1) {
@@ -140,7 +146,7 @@ class IoDohTransport implements DohTransport, DohWireTransport {
           'DNS transport request queue is full',
           maxQueuedRequests: maxQueuedRequests));
     }
-    final request = _IoRequest(this, uri, maxResponseBytes, query);
+    final request = _IoRequest(this, uri, mediaType, maxResponseBytes, query);
     if (_active < maxConcurrentRequests) {
       _active++;
       _run(request);
@@ -360,6 +366,12 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   }
 }
 
+const _dnsMessage = 'application/dns-message';
+
+// A lower-case RFC 9110 type/subtype without parameters.
+final _mediaType =
+    RegExp(r"^[!#$%&'*+.^_`|~0-9a-z-]+/[!#$%&'*+.^_`|~0-9a-z-]+$");
+
 // RFC 9111 §5.1: use the first member of a list-valued or repeated Age, and
 // ignore it if that member is not delta-seconds. Values beyond 2^31 saturate.
 Duration _age(List<String>? values) {
@@ -411,6 +423,7 @@ class _Lane {
 class _IoRequest {
   final IoDohTransport transport;
   final Uri uri;
+  final String mediaType;
   final int limit;
   final List<int>? query;
   List<int>? sent;
@@ -418,7 +431,7 @@ class _IoRequest {
   _Lane? lane;
   Timer? _deadline;
   bool _done = false;
-  _IoRequest(this.transport, this.uri, this.limit, this.query) {
+  _IoRequest(this.transport, this.uri, this.mediaType, this.limit, this.query) {
     result.future.ignore();
   }
 
@@ -462,8 +475,7 @@ class _IoRequest {
       }
       request.followRedirects = false;
       request.headers.removeAll(HttpHeaders.acceptEncodingHeader);
-      request.headers.set(HttpHeaders.acceptHeader,
-          query == null ? 'application/dns-json' : 'application/dns-message');
+      request.headers.set(HttpHeaders.acceptHeader, mediaType);
       if (sent case final sent?) {
         request.headers.contentType = ContentType('application', 'dns-message');
         request.contentLength = sent.length;
@@ -474,10 +486,7 @@ class _IoRequest {
         throw DohHttpStatusException('Resolver HTTP request failed',
             statusCode: response.statusCode);
       }
-      final mime = response.headers.contentType?.mimeType;
-      if (query == null
-          ? mime != 'application/json' && mime != 'application/dns-json'
-          : mime != 'application/dns-message') {
+      if (response.headers.contentType?.mimeType != mediaType) {
         throw const DohMalformedResponseException(
             'Unexpected DNS response media type');
       }

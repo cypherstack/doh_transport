@@ -259,22 +259,10 @@ void main() {
     expect(server.exchanges.last.connection, 2);
   });
 
-  test('JSON requests never consume a duplicate response from a prior request',
+  test('GET requests never consume a duplicate response from a prior request',
       () async {
-    List<int> response(String value) => httpResponse(
-        utf8.encode(jsonEncode({
-          'Status': 0,
-          'AD': true,
-          'CD': false,
-          'TC': false,
-          'Question': [
-            {'name': 'alice.example.', 'type': 16}
-          ],
-          'Answer': [
-            {'name': 'alice.example.', 'type': 16, 'TTL': 60, 'data': value}
-          ]
-        })),
-        type: 'application/json');
+    List<int> response(String value) =>
+        httpResponse(utf8.encode(value), type: 'text/plain');
     await serve((e) async {
       if (e.index == 1) {
         e.send(response('old'));
@@ -287,16 +275,14 @@ void main() {
       }
     });
     final t = transport(null);
-    final endpoint = Uri.parse('https://localhost:${server.port}/resolve');
-    Future<String> lookup() async {
-      final body =
-          (await t.start(endpoint, maxResponseBytes: 65536).result).body;
-      final decoded = jsonDecode(utf8.decode(body)) as Map<String, dynamic>;
-      return ((decoded['Answer'] as List).single as Map)['data'] as String;
-    }
+    final endpoint = Uri.parse('https://localhost:${server.port}/resource');
+    Future<String> fetch() async => utf8.decode((await t
+            .start(endpoint, mediaType: 'text/plain', maxResponseBytes: 512)
+            .result)
+        .body);
 
-    expect(await lookup(), 'old');
-    expect(await lookup(), 'new');
+    expect(await fetch(), 'old');
+    expect(await fetch(), 'new');
     expect(server.connections, 2);
   });
 
