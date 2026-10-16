@@ -19,7 +19,8 @@ final class DohInvalidQueryException extends DohTransportException {
       {super.cause, super.causeStackTrace});
 }
 
-/// A response that does not parse or is internally inconsistent.
+/// A response with the wrong media type or an encoding, or a wire reply whose
+/// header or question is malformed, not a response, or truncated.
 final class DohMalformedResponseException extends DohTransportException {
   const DohMalformedResponseException(super.message,
       {super.cause, super.causeStackTrace});

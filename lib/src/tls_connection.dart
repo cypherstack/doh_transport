@@ -62,12 +62,23 @@ ConnectionTask<Socket> connectTls(Object host, int port,
       () => fail(const DohCancelledException('DNS connection cancelled')));
 }
 
+/// A [Socket] over an established [RawSecureSocket].
+///
+/// It ends, completing [done], when destroyed, when the raw socket fails or
+/// closes, when the peer stops sending (which ends an HTTP/1.1 connection),
+/// or once both directions are shut down locally. A write that is still in
+/// progress at that point fails, and later writes fail with the same error.
 final class _TlsSocket extends StreamView<Uint8List> implements Socket {
   final RawSecureSocket _raw;
   final StreamController<Uint8List> _incoming;
+  final _ended = Completer<void>();
   late final _TlsWriter _writer = _TlsWriter(this);
   late final IOSink _sink = IOSink(_writer);
-  bool _closed = false;
+  bool _destroyed = false;
+  bool _readShut = false;
+  bool _writeShut = false;
+  Object? _error;
+  StackTrace? _errorStack;
 
   factory _TlsSocket(RawSecureSocket raw) =>
       _TlsSocket._(raw, StreamController<Uint8List>(sync: true));
@@ -77,18 +88,19 @@ final class _TlsSocket extends StreamView<Uint8List> implements Socket {
       ..onListen = _updateReading
       ..onPause = _updateReading
       ..onResume = _updateReading
-      ..onCancel = () {
-        if (!_closed) _raw.shutdown(SocketDirection.receive);
-      };
-    _sink.done.ignore();
+      ..onCancel = _shutRead;
+    _ended.future.ignore();
+    _sink.done.then((_) => _end(), onError: _end);
     _raw
       ..readEventsEnabled = false
       ..writeEventsEnabled = false
-      ..listen(_event, onError: _error, onDone: _done);
+      ..listen(_event, onError: _fail, onDone: destroy);
   }
 
+  Object get _closedError => _error ?? const SocketException('Socket closed');
+
   void _updateReading() {
-    if (!_closed) {
+    if (!_destroyed && !_readShut) {
       _raw.readEventsEnabled = _incoming.hasListener && !_incoming.isPaused;
     }
   }
@@ -96,31 +108,58 @@ final class _TlsSocket extends StreamView<Uint8List> implements Socket {
   void _event(RawSocketEvent event) {
     if (event == RawSocketEvent.read) {
       final bytes = _raw.read();
-      if (bytes != null && !_incoming.isClosed) _incoming.add(bytes);
+      if (bytes != null && !_readShut && !_destroyed) _incoming.add(bytes);
     } else if (event == RawSocketEvent.write) {
       _writer.write();
     } else if (event == RawSocketEvent.readClosed) {
-      _incoming.close();
+      destroy();
     }
   }
 
-  void _error(Object error, StackTrace stack) {
-    if (!_incoming.isClosed) _incoming.addError(error, stack);
-    _writer.finish(error, stack);
+  void _shutRead() {
+    if (_destroyed || _readShut) return;
+    _readShut = true;
+    _raw
+      ..readEventsEnabled = false
+      ..shutdown(SocketDirection.receive);
+    if (_writeShut) destroy();
+  }
+
+  void _shutWrite() {
+    if (_writeShut) return;
+    _writeShut = true;
+    _raw.shutdown(SocketDirection.send);
+    if (_readShut) destroy();
+  }
+
+  /// Ends the socket with [error], which a write in progress and [done]
+  /// report, as does the stream when the error came from the socket.
+  void _fail(Object error, StackTrace stack, {bool fromSocket = true}) {
+    if (_destroyed) return;
+    _error = error;
+    _errorStack = stack;
+    if (fromSocket && !_readShut) _incoming.addError(error, stack);
     destroy();
   }
 
-  void _done() {
-    _incoming.close();
-    _writer.finish();
+  void _end([Object? error, StackTrace? stack]) {
+    if (_ended.isCompleted) return;
+    if (error == null) {
+      _ended.complete();
+    } else {
+      _ended.completeError(error, stack);
+    }
   }
 
   @override
   void destroy() {
-    if (_closed) return;
-    _closed = true;
+    if (_destroyed) return;
+    _destroyed = true;
+    if (_writer.active) _error ??= const SocketException('Socket closed');
     _raw.close();
-    _done();
+    _incoming.close();
+    _writer.finish(_error, _errorStack);
+    _end(_error, _errorStack);
   }
 
   @override
@@ -155,7 +194,7 @@ final class _TlsSocket extends StreamView<Uint8List> implements Socket {
   @override
   Future<void> close() => _sink.close();
   @override
-  Future<void> get done => _sink.done;
+  Future<void> get done => _ended.future;
   @override
   void write(Object? object) => _sink.write(object);
   @override
@@ -177,21 +216,23 @@ final class _TlsWriter implements StreamConsumer<List<int>> {
   int _offset = 0;
   _TlsWriter(this.socket);
 
+  bool get active => _done != null;
+
   @override
   Future<void> addStream(Stream<List<int>> stream) {
-    final done = _done = Completer<void>();
-    if (socket._closed) {
-      finish();
-    } else {
-      _source = stream.listen((data) {
-        _pending = data;
-        _offset = 0;
-        write();
-      }, onError: (Object error, StackTrace stack) {
-        socket.destroy();
-        finish(error, stack);
-      }, onDone: finish, cancelOnError: true);
+    if (socket._destroyed) {
+      return Future.error(socket._closedError, socket._errorStack);
     }
+    final done = _done = Completer<void>();
+    _source = stream.listen((data) {
+      _pending = data;
+      _offset = 0;
+      write();
+    },
+        onError: (Object error, StackTrace stack) =>
+            socket._fail(error, stack, fromSocket: false),
+        onDone: finish,
+        cancelOnError: true);
     return done.future;
   }
 
@@ -202,8 +243,7 @@ final class _TlsWriter implements StreamConsumer<List<int>> {
     try {
       _offset += socket._raw.write(data, _offset);
     } catch (error, stack) {
-      socket.destroy();
-      finish(error, stack);
+      socket._fail(error, stack);
       return;
     }
     if (_offset < data.length) {
@@ -215,6 +255,7 @@ final class _TlsWriter implements StreamConsumer<List<int>> {
     }
   }
 
+  /// Ends the current stream, with [error] if the socket ended first.
   void finish([Object? error, StackTrace? stack]) {
     final done = _done;
     _source?.cancel();
@@ -230,7 +271,11 @@ final class _TlsWriter implements StreamConsumer<List<int>> {
   }
 
   @override
-  Future<void> close() async {
-    if (!socket._closed) socket._raw.shutdown(SocketDirection.send);
+  Future<void> close() {
+    if (socket._destroyed) {
+      return Future.error(socket._closedError, socket._errorStack);
+    }
+    socket._shutWrite();
+    return Future.value();
   }
 }

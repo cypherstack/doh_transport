@@ -128,6 +128,8 @@ void main() {
       '/dns-message',
       'application/dns-message; charset=utf-8',
       'application/dns message',
+      '*/*',
+      'application/*',
       'application/dns-message\r\nx-injected: 1',
     ]) {
       await expectLater(

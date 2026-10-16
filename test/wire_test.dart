@@ -44,12 +44,19 @@ void main() {
     validateDnsWireResponse(query, wireReply()..[7] = 255);
   });
 
-  test('reads only the header and question of a large hostile reply', () {
-    final response = CountingBytes(wireReply(answers: [
-      for (var i = 0; i < 5000; i++) wireRecord([0xc0, 12], 99, [])
-    ]));
-    validateDnsWireResponse(query, response);
-    expect(response.reads, lessThan(64));
+  test('work depends on the question, not on the records', () {
+    int reads(List<int> reply) {
+      final bytes = CountingBytes(reply);
+      validateDnsWireResponse(query, bytes);
+      return bytes.reads;
+    }
+
+    expect(
+        reads(wireReply(answers: [
+          for (var i = 0; i < 5000; i++) wireRecord([0xc0, 12], 99, [])
+        ])),
+        reads(wireReply()),
+        reason: 'only the header and question are read');
   });
 
   test('question comparison folds ASCII case in the name only', () {

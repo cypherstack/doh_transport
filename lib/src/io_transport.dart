@@ -329,9 +329,8 @@ class IoDohTransport implements DohTransport, DohWireTransport {
 
 const _dnsMessage = 'application/dns-message';
 
-// A lower-case RFC 9110 type/subtype without parameters.
-final _mediaType =
-    RegExp(r"^[!#$%&'*+.^_`|~0-9a-z-]+/[!#$%&'*+.^_`|~0-9a-z-]+$");
+// A lower-case RFC 9110 type/subtype without parameters or wildcards.
+final _mediaType = RegExp(r"^[!#$%&'+.^_`|~0-9a-z-]+/[!#$%&'+.^_`|~0-9a-z-]+$");
 
 // RFC 9111 §5.1: use the first member of a list-valued or repeated Age, and
 // ignore it if that member is not delta-seconds. Values beyond 2^31 saturate.
