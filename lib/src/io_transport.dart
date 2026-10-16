@@ -50,7 +50,8 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   final int maxConcurrentRequests;
   final int maxQueuedRequests;
 
-  /// Whether wire queries are padded with [padDnsWireQuery].
+  /// Whether wire queries that end in an OPT record are padded to a multiple
+  /// of 128 octets (RFC 8467).
   final bool padQueries;
 
   /// Whether wire queries to the same origin share connections. Off by
