@@ -37,6 +37,9 @@ class IoDohTransport implements DohTransport, DohWireTransport {
   /// Creates each lane's HTTP client inside that lane's zone. For tests: the
   /// client it returns bypasses this transport's TLS and connection guarantees.
   final HttpClient Function(SecurityContext? context)? httpClientFactory;
+
+  /// The deadline for each connection's TCP connect, SOCKS negotiation and
+  /// TLS handshake.
   final Duration connectionTimeout;
 
   /// The deadline for each operation once it leaves the queue. A queued
@@ -219,45 +222,27 @@ class IoDohTransport implements DohTransport, DohWireTransport {
       );
       try {
         client
-          ..connectionTimeout = connectionTimeout
           ..idleTimeout = idleTimeout
           ..maxConnectionsPerHost = 1
           ..autoUncompress = false
           ..userAgent = null
           ..findProxy = (_) => 'DIRECT';
-        final proxy = this.proxy;
-        final destination = this.destination;
-        if (proxy != null || destination != null) {
-          client.connectionFactory = (requested, _, __) async {
-            final owner = lane.owner;
-            if (owner == null ||
-                owner._done ||
-                _origin(requested) != lane.origin ||
-                _origin(owner.uri) != lane.origin) {
-              throw const DohCancelledException(
-                  'DNS connection cancelled or redirected',
-                  reason: DohCancellationReason.redirectRefused);
-            }
-            final task = proxy != null
-                ? SocksConnection.start(
-                    proxyHost: proxy.host,
-                    proxyPort: proxy.port,
-                    targetHost: destination?.address ?? owner.uri.host,
-                    targetPort: owner.uri.port,
-                    tlsHost: owner.uri.host,
-                    securityContext: securityContext,
-                    credentials: proxy.credentials,
-                    timeout: connectionTimeout)
-                : connectTls(destination!, owner.uri.port,
-                    tlsHost: owner.uri.host,
-                    context: securityContext,
-                    timeout: connectionTimeout);
-            lane.tasks.add(task);
-            task.socket.then((_) => lane.tasks.remove(task),
-                onError: (Object _) => lane.tasks.remove(task));
-            return task;
-          };
-        }
+        client.connectionFactory = (requested, _, __) async {
+          final owner = lane.owner;
+          if (owner == null ||
+              owner._done ||
+              _origin(requested) != lane.origin ||
+              _origin(owner.uri) != lane.origin) {
+            throw const DohCancelledException(
+                'DNS connection cancelled or redirected',
+                reason: DohCancellationReason.redirectRefused);
+          }
+          final task = _connect(owner.uri);
+          lane.tasks.add(task);
+          task.socket.then((_) => lane.tasks.remove(task),
+              onError: (Object _) => lane.tasks.remove(task));
+          return task;
+        };
       } catch (_) {
         try {
           client.close(force: true);
@@ -267,6 +252,40 @@ class IoDohTransport implements DohTransport, DohWireTransport {
       return client;
     });
     return lane;
+  }
+
+  /// Opens a TLS connection for [uri] through the [proxy], or directly, to
+  /// [destination] when set. Each path owns the [connectionTimeout] deadline
+  /// and reports it as [DohConnectionTimeoutException].
+  ConnectionTask<Socket> _connect(Uri uri) {
+    final proxy = this.proxy;
+    if (proxy == null) {
+      return connectTls(destination ?? uri.host, uri.port,
+          tlsHost: uri.host,
+          context: securityContext,
+          timeout: connectionTimeout);
+    }
+    final task = SocksConnection.start(
+        proxyHost: proxy.host,
+        proxyPort: proxy.port,
+        targetHost: destination?.address ?? uri.host,
+        targetPort: uri.port,
+        tlsHost: uri.host,
+        securityContext: securityContext,
+        credentials: proxy.credentials,
+        timeout: connectionTimeout);
+    return ConnectionTask.fromSocket(
+        task.socket.catchError(
+            (Object error, StackTrace stack) =>
+                throw DohConnectionTimeoutException(
+                    'DNS connection deadline exceeded',
+                    timeout: connectionTimeout,
+                    cause: error,
+                    causeStackTrace: stack),
+            test: (error) =>
+                error is SocksConnectException &&
+                error.code == SocksConnectError.timedOut),
+        task.cancel);
   }
 
   void _retire(_Lane lane) {
@@ -461,14 +480,8 @@ class _IoRequest {
       _finish(
           error is DohTransportException
               ? error
-              : error is TimeoutException
-                  ? DohConnectionTimeoutException(
-                      'DNS connection deadline exceeded',
-                      timeout: transport.connectionTimeout,
-                      cause: error,
-                      causeStackTrace: stack)
-                  : DohConnectionException('Resolver connection failed',
-                      cause: error, causeStackTrace: stack),
+              : DohConnectionException('Resolver connection failed',
+                  cause: error, causeStackTrace: stack),
           stack);
     }
   }
